@@ -1,0 +1,98 @@
+{
+  "name": "ImageAnalysis",
+  "type": "object",
+  "properties": {
+    "image_url": {
+      "type": "string",
+      "description": "URL of the analyzed image"
+    },
+    "source_type": {
+      "type": "string",
+      "enum": [
+        "upload",
+        "url"
+      ],
+      "description": "How the image was provided"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "real",
+        "ai_generated",
+        "inconclusive"
+      ],
+      "description": "The analysis verdict"
+    },
+    "confidence_score": {
+      "type": "number",
+      "description": "Overall confidence score 0-100"
+    },
+    "breakdown": {
+      "type": "object",
+      "description": "Detailed scoring breakdown with individual criteria scores"
+    },
+    "analysis_summary": {
+      "type": "string",
+      "description": "Text summary of the analysis"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "The key decisive signals that determined the verdict"
+    },
+    "image_metadata": {
+      "type": "object",
+      "description": "Extracted metadata about the image"
+    },
+    "filename": {
+      "type": "string",
+      "description": "Original filename if uploaded"
+    },
+    "reverse_search_result": {
+      "type": "object",
+      "description": "Google reverse image search results",
+      "properties": {
+        "has_matches": {
+          "type": "boolean"
+        },
+        "results_count": {
+          "type": "number"
+        },
+        "reverse_search_url": {
+          "type": "string"
+        }
+      }
+    },
+    "flagged_regions": {
+      "type": "array",
+      "description": "Suspicious regions flagged by the AI with bounding box coordinates (percentages)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "width": {
+            "type": "number"
+          },
+          "height": {
+            "type": "number"
+          },
+          "category": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "image_url",
+    "verdict",
+    "confidence_score"
+  ]
+}

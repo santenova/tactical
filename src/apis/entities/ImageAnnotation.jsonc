@@ -1,0 +1,42 @@
+{
+  "name": "ImageAnnotation",
+  "type": "object",
+  "properties": {
+    "analysis_id": {
+      "type": "string",
+      "description": "Reference to the ImageAnalysis record"
+    },
+    "x": {
+      "type": "number",
+      "description": "X coordinate as percentage of image width (0-100)"
+    },
+    "y": {
+      "type": "number",
+      "description": "Y coordinate as percentage of image height (0-100)"
+    },
+    "note": {
+      "type": "string",
+      "description": "User's annotation or note about this region"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "artifact",
+        "suspicious",
+        "texture",
+        "lighting",
+        "face",
+        "geometry",
+        "other"
+      ],
+      "default": "suspicious",
+      "description": "Category of the annotation"
+    }
+  },
+  "required": [
+    "analysis_id",
+    "x",
+    "y",
+    "note"
+  ]
+}

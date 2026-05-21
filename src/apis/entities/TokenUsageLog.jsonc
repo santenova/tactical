@@ -1,0 +1,31 @@
+{
+  "name": "TokenUsageLog",
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string",
+      "description": "Email of the user who made the API call"
+    },
+    "operation": {
+      "type": "string",
+      "description": "Type of operation (e.g., 'analyze_image', 'upload_file')"
+    },
+    "tokens_used": {
+      "type": "number",
+      "description": "Number of tokens consumed"
+    },
+    "image_url": {
+      "type": "string",
+      "description": "URL of analyzed image if applicable"
+    },
+    "verdict": {
+      "type": "string",
+      "description": "Analysis verdict if applicable"
+    }
+  },
+  "required": [
+    "user_email",
+    "operation",
+    "tokens_used"
+  ]
+}

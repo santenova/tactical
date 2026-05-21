@@ -1,0 +1,35 @@
+{
+  "name": "AnalysisError",
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string",
+      "description": "Email of the user who encountered the error"
+    },
+    "image_url": {
+      "type": "string",
+      "description": "URL of the image being analyzed when error occurred"
+    },
+    "error_message": {
+      "type": "string",
+      "description": "The error message"
+    },
+    "source_type": {
+      "type": "string",
+      "enum": [
+        "upload",
+        "url"
+      ],
+      "description": "Whether image was uploaded or from URL"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the error occurred"
+    }
+  },
+  "required": [
+    "error_message",
+    "source_type"
+  ]
+}
