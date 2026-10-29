@@ -1,13 +1,9 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Database, RefreshCw, ChevronRight, ChevronDown, Trash2, Plus, Search, ChevronsUpDown, ChevronUp } from 'lucide-react';
 
-const LS_KEY = 'tactical_es_endpoints';
-const DB_ACTIVE_KEY = 'tactical_es_active_ep';
-function loadEndpoints() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY)) || [{ url: 'http://localhost:9200', label: 'Local' }]; }
-  catch { return [{ url: 'http://localhost:9200', label: 'Local' }]; }
-}
-function saveEndpoints(eps) { localStorage.setItem(LS_KEY, JSON.stringify(eps)); }
+import { loadEsEndpoints, saveEsEndpoints, ES_ACTIVE_LS_KEY } from '@/lib/esEndpoints';
+
+const DB_ACTIVE_KEY = ES_ACTIVE_LS_KEY;
 
 const CAT_HEADERS = {
   cluster: ['status', 'name', 'node.total', 'node.data', 'shards', 'pri', 'active_shards_percent'],
@@ -43,8 +39,8 @@ function sortRows(rows, col, dir) {
 }
 
 export default function DBPanel() {
-  const [endpoints, setEndpoints] = useState(loadEndpoints);
-  const [activeEp, setActiveEp] = useState(() => Math.min(parseInt(localStorage.getItem(DB_ACTIVE_KEY) || '0'), Math.max(0, loadEndpoints().length - 1)));
+  const [endpoints, setEndpoints] = useState(loadEsEndpoints);
+  const [activeEp, setActiveEp] = useState(() => Math.min(parseInt(localStorage.getItem(DB_ACTIVE_KEY) || '0'), Math.max(0, loadEsEndpoints().length - 1)));
   const [newUrl, setNewUrl] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -101,6 +97,14 @@ export default function DBPanel() {
     VIEWS.forEach(v => fetchView(v, ep));
   }, [ep, fetchView]);
 
+  // Every view loads as soon as the panel opens — no endpoint click needed
+  const bootedRef = useRef(false);
+  useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
+    connectEndpoint(activeEp);
+  }, [activeEp, connectEndpoint]);
+
   const fetchSub = useCallback(async (index, type) => {
     const key = `${index}_${type}`;
     setSubLoading(p => ({ ...p, [key]: true }));
@@ -128,7 +132,7 @@ export default function DBPanel() {
   const addEndpoint = () => {
     if (!newUrl.trim()) return;
     const next = [...endpoints, { url: newUrl.trim(), label: newLabel || newUrl.trim() }];
-    setEndpoints(next); saveEndpoints(next);
+    setEndpoints(next); saveEsEndpoints(next);
     setNewUrl(''); setNewLabel(''); setShowAdd(false);
     connectEndpoint(next.length - 1);
   };
@@ -141,7 +145,7 @@ export default function DBPanel() {
 
   const removeEndpoint = (i) => {
     const next = endpoints.filter((_, idx) => idx !== i);
-    setEndpoints(next); saveEndpoints(next);
+    setEndpoints(next); saveEsEndpoints(next);
     if (activeEp >= next.length) setActiveEp(Math.max(0, next.length - 1));
   };
 
@@ -366,7 +370,7 @@ export default function DBPanel() {
 
       {!anyLoading && !error && rawRows.length === 0 && Object.keys(allData).length === 0 && (
         <div style={{ textAlign: 'center', padding: '40px 0', color: 'rgba(0,255,204,0.2)', fontSize: '0.75rem', letterSpacing: '2px' }}>
-          CLICK AN ENDPOINT TO CONNECT &amp; FETCH ALL VIEWS
+          NO DATA — CHECK THE ENDPOINT ABOVE
         </div>
       )}
 

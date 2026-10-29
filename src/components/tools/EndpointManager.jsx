@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import ReactDOM from 'react-dom';
 import { Plus, Trash2, X, Server } from 'lucide-react';
+import { OLLAMA_PROXY_URL } from '@/lib/localProxies';
 
 const DEFAULT_ENDPOINTS = [
+  OLLAMA_PROXY_URL,
   'http://localhost:11434',
   'http://127.0.0.1:11434',
 ];
@@ -15,7 +17,7 @@ export default function EndpointManager({ endpoints, onEndpointsChange, selected
   const handleAdd = () => {
     const val = newVal.trim().replace(/\/$/, '');
     if (!val) return;
-    if (!/^https?:\/\/.+/.test(val)) { setError('Must start with http:// or https://'); return; }
+    if (!/^(https?:\/\/|\/).+/.test(val)) { setError('Must start with http://, https:// or /'); return; }
     if (endpoints.includes(val)) { setError('Endpoint already exists'); return; }
     onEndpointsChange([...endpoints, val]);
     onSelect(val);
@@ -104,7 +106,7 @@ export default function EndpointManager({ endpoints, onEndpointsChange, selected
                 <input
                   type="text"
                   className="flex-1 px-3 py-2 rounded text-xs"
-                  placeholder="http://192.168.1.x:11434"
+                  placeholder="/proxy or http://192.168.1.x:11434"
                   value={newVal}
                   onChange={e => { setNewVal(e.target.value); setError(''); }}
                   onKeyDown={e => e.key === 'Enter' && handleAdd()}

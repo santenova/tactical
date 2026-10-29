@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CheckCircle, XCircle, Loader, AlertTriangle } from 'lucide-react';
 
-const ES_LS_KEY = 'tactical_es_endpoints';
-const BL_LS_KEY = 'tactical_browserless_endpoints';
+import { preferElasticEndpoint } from '@/lib/esEndpoints';
+import { OLLAMA_PROXY_URL, ELASTIC_PROXY_URL, resolveLocalEndpoints } from '@/lib/localProxies';
 
-function loadES() {
-  try { return JSON.parse(localStorage.getItem(ES_LS_KEY)) || []; } catch { return []; }
-}
+const BL_LS_KEY = 'tactical_browserless_endpoints';
 function loadBL() {
   try { return JSON.parse(localStorage.getItem(BL_LS_KEY)) || []; } catch { return []; }
 }
@@ -16,28 +14,27 @@ const CHECKS = [
     id: 'ollama',
     label: 'OLLAMA',
     desc: 'Local LLM runtime',
-    test: async () => {
-      const ep = localStorage.getItem('tactical_app_endpoint') || 'http://localhost:11434';
+    test: async (targets) => {
+      const ep = targets.ollama;
       const res = await fetch(`${ep}/v1/models`, { signal: AbortSignal.timeout(3000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const count = (data.data || []).length;
-      return count > 0 ? `${count} model${count !== 1 ? 's' : ''} available` : 'Connected — no models loaded';
+      const base = count > 0 ? `${count} model${count !== 1 ? 's' : ''} available` : 'Connected — no models loaded';
+      return `${base} · ${ep === OLLAMA_PROXY_URL ? 'PROXY' : 'DIRECT'}`;
     },
   },
   {
     id: 'elasticsearch',
     label: 'ELASTICSEARCH',
     desc: 'Knowledge index storage',
-    test: async () => {
-      const eps = loadES();
-      if (!eps.length) throw new Error('No endpoints configured');
-      const ep = eps[0].url;
+    test: async (targets) => {
+      const ep = targets.elastic;
       const res = await fetch(`${ep}/_cat/health?format=json`, { signal: AbortSignal.timeout(3000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const status = json[0]?.status || 'unknown';
-      return `Cluster ${status.toUpperCase()} — ${eps.length} endpoint${eps.length !== 1 ? 's' : ''}`;
+      return `Cluster ${status.toUpperCase()} · ${ep === ELASTIC_PROXY_URL ? 'PROXY' : 'DIRECT'}`;
     },
   },
   {
@@ -91,12 +88,16 @@ export default function IntroOverlay({ onBoot }) {
     const updated = CHECKS.map(c => ({ id: c.id, status: 'pending', msg: '' }));
     setResults([...updated]);
 
+    // Internal proxies when the local network answers, direct local ports otherwise
+    const targets = await resolveLocalEndpoints(true);
+    preferElasticEndpoint(targets.elastic);
+
     for (let i = 0; i < CHECKS.length; i++) {
       const check = CHECKS[i];
       updated[i] = { ...updated[i], status: 'running' };
       setResults([...updated]);
       try {
-        const msg = await check.test();
+        const msg = await check.test(targets);
         updated[i] = { id: check.id, status: 'ok', msg };
       } catch (e) {
         updated[i] = { id: check.id, status: check.optional ? 'warn' : 'error', msg: e.message };

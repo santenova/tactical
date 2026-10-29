@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import { THEMES } from './ThemeSwitcher';
 
@@ -38,6 +39,7 @@ export default function Navbar({ activeTab, onTabChange, activeTheme, onThemeCha
     fontFamily: 'Rajdhani, sans-serif', fontSize: '0.65rem', letterSpacing: '2px',
     textTransform: 'uppercase', cursor: 'pointer', padding: '5px 12px', borderRadius: 3,
     border: '1px solid rgba(0,255,204,0.2)', color: 'rgba(0,255,204,0.6)', background: 'transparent',
+    textDecoration: 'none', display: 'inline-block',
   };
 
   return (
@@ -103,6 +105,9 @@ export default function Navbar({ activeTab, onTabChange, activeTheme, onThemeCha
           <button style={utilBtn} onClick={() => { onArchiveToggle(); setMenuOpen(false); }}>
             ◷ ARCHIVE{archiveCount > 0 && ` (${archiveCount})`}
           </button>
+          <Link to="/interaction-logs" style={utilBtn} onClick={() => setMenuOpen(false)}>◈ LOGS</Link>
+          <Link to="/knowledge-presets" style={utilBtn} onClick={() => setMenuOpen(false)}>⬡ PRESETS</Link>
+          <Link to="/data-export" style={utilBtn} onClick={() => setMenuOpen(false)}>⇩ EXPORT</Link>
         </div>
       )}
     </nav>

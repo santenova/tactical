@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { RefreshCw, Download, Info } from 'lucide-react';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 import EndpointManager from './EndpointManager';
+import { OLLAMA_PROXY_URL } from '@/lib/localProxies';
 
 const INDICATOR_COLORS = {
   idle: 'rgba(0,255,204,0.3)',
@@ -10,7 +11,7 @@ const INDICATOR_COLORS = {
   warning: '#ffcc00',
 };
 
-const DEFAULT_ENDPOINTS = ['http://localhost:11434', 'http://127.0.0.1:11434'];
+const DEFAULT_ENDPOINTS = [OLLAMA_PROXY_URL, 'http://localhost:11434', 'http://127.0.0.1:11434'];
 
 export default function ModelPanel({
   endpoint, onEndpointChange,
@@ -18,7 +19,9 @@ export default function ModelPanel({
   onRefresh, onPullModel, onFetchInfo,
   statusIndicator,
 }) {
-  const [endpoints, setEndpoints] = useLocalStorage('tactical_endpoints', DEFAULT_ENDPOINTS);
+  const [savedEndpoints, setEndpoints] = useLocalStorage('tactical_endpoints', DEFAULT_ENDPOINTS);
+  // The local proxy stays selectable even for installs that saved their list before it existed
+  const endpoints = savedEndpoints.includes(OLLAMA_PROXY_URL) ? savedEndpoints : [OLLAMA_PROXY_URL, ...savedEndpoints];
   const [pullName, setPullName] = useState('');
   const [showInfo, setShowInfo] = useState(false);
   const [modelInfo, setModelInfo] = useState(null);

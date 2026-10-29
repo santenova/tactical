@@ -4,9 +4,14 @@ import KnowledgeCoreViz from './KnowledgeCoreViz';
 import SearchPanel from './SearchPanel';
 import SummarizePanel from './SummarizePanel';
 import SchedulerPanel from './SchedulerPanel';
+import CorePresets from './CorePresets';
+import CoreRefiner from './CoreRefiner';
+import PersonalCores from './PersonalCores';
+import { base44 } from '@/api/base44Client';
+import { loadEsEndpoints, ES_ACTIVE_LS_KEY, saveActiveEsEndpoint } from '@/lib/esEndpoints';
+import { OLLAMA_PROXY_URL, normalizeOllamaUrl } from '@/lib/localProxies';
 
 const BL_LS_KEY = 'tactical_browserless_endpoints';
-const ES_LS_KEY = 'tactical_es_endpoints';
 const CORE_LS_KEY = 'tactical_knowledge_core_state';
 const CORE_UI_KEY = 'tactical_core_ui';
 
@@ -15,42 +20,49 @@ function loadCoreUI() {
 }
 function saveCoreUI(u) { localStorage.setItem(CORE_UI_KEY, JSON.stringify(u)); }
 export const INDEX_PREFIX = 'knowledge_core_';
+export function coreIndexName(name) {
+  return INDEX_PREFIX + String(name).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+}
 
 function loadBL() {
   try { return JSON.parse(localStorage.getItem(BL_LS_KEY)) || []; } catch { return []; }
 }
-function loadES() {
-  try { return JSON.parse(localStorage.getItem(ES_LS_KEY)) || []; } catch { return []; }
-}
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(CORE_LS_KEY));
-    return saved ? { queryExpansionEnabled: true, ...saved } : {
+    return saved ? { queryExpansionEnabled: true, activePersonal: '', ...saved, embeddingUrl: normalizeOllamaUrl(saved.embeddingUrl) } : {
+      activePersonal: '',
       coreName: 'default', queries: [], delay: 8,
       embeddingEnabled: false,
-      embeddingUrl: 'http://localhost:11434',
+      embeddingUrl: OLLAMA_PROXY_URL,
       embeddingModel: 'nomic-embed-text',
       summaryModel: 'llama3:latest',
       queryExpansionEnabled: true,
     };
   } catch {
-    return { coreName: 'default', queries: [], delay: 8, embeddingEnabled: false, embeddingUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', summaryModel: 'llama3:latest', queryExpansionEnabled: true };
+    return { activePersonal: '', coreName: 'default', queries: [], delay: 8, embeddingEnabled: false, embeddingUrl: OLLAMA_PROXY_URL, embeddingModel: 'nomic-embed-text', summaryModel: 'llama3:latest', queryExpansionEnabled: true };
   }
 }
 function saveState(s) { localStorage.setItem(CORE_LS_KEY, JSON.stringify(s)); }
 
-export default function CorePanel() {
+export default function CorePanel({ aiEndpoint, aiModel }) {
   const blEndpoints = loadBL();
-  const esEndpoints = loadES();
+  const esEndpoints = loadEsEndpoints();
 
   const [state, setState] = useState(loadState);
   const [activeBL, setActiveBL] = useState(() => { const u = loadCoreUI(); return Math.min(u.activeBL || 0, Math.max(0, loadBL().length - 1)); });
   const blRoundRobinRef = useRef(0);
-  const [activeES, setActiveES] = useState(() => { const u = loadCoreUI(); return Math.min(u.activeES || 0, Math.max(0, loadES().length - 1)); });
+  // Follow the endpoint that is active on the DB page — one source of truth for both panels
+  const [activeES, setActiveES] = useState(() => {
+    const saved = parseInt(localStorage.getItem(ES_ACTIVE_LS_KEY) || '0', 10);
+    return Math.min(Number.isNaN(saved) ? 0 : saved, Math.max(0, loadEsEndpoints().length - 1));
+  });
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState([]);
   const [stats, setStats] = useState({ indexed: 0, queried: 0, errors: 0, vectors: 0 });
   const [newQuery, setNewQuery] = useState('');
+  const [refining, setRefining] = useState(null);
+  const [userId, setUserId] = useState('');
   const [indexStatus, setIndexStatus] = useState('unknown');
   const [view, setView] = useState(() => loadCoreUI().view || 'ingest');
   const runningRef = useRef(false);
@@ -58,7 +70,10 @@ export default function CorePanel() {
   const logRef = useRef(null);
 
   useEffect(() => { saveState(state); }, [state]);
-  useEffect(() => { saveCoreUI({ activeBL, activeES, view }); }, [activeBL, activeES, view]);
+  // Personal cores are stored per user, so the refiner needs the signed-in id
+  useEffect(() => { base44.auth.me().then(u => setUserId(u?.id || '')).catch(() => {}); }, []);
+  useEffect(() => { saveCoreUI({ activeBL, view }); }, [activeBL, view]);
+  useEffect(() => { saveActiveEsEndpoint(activeES); }, [activeES]);
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
@@ -72,7 +87,7 @@ export default function CorePanel() {
   const expandQuery = useCallback(async (query) => {
     const ep = esEndpoints[activeES];
     if (!ep) return [query];
-    const ollamaUrl = state.embeddingUrl || 'http://localhost:11434';
+    const ollamaUrl = normalizeOllamaUrl(state.embeddingUrl);
     const model = state.summaryModel || 'llama3:latest';
     const prompt = `You are a search query expansion expert. Given the query "${query}", output a JSON array of 5-8 closely related search terms, synonyms, and technical concepts that would help retrieve relevant documents. Output ONLY the JSON array, no explanation. Example: ["term1","term2","term3"]`;
     const res = await fetch(`${ollamaUrl}/v1/chat/completions`, {
@@ -102,7 +117,7 @@ export default function CorePanel() {
     return json.embedding || null;
   }, [state.embeddingUrl, state.embeddingModel]);
 
-  const ensureIndex = useCallback(async (esUrl, indexName, embeddingEnabled) => {
+  const ensureIndex = useCallback(async (esUrl, indexName, embeddingEnabled, dims = 768) => {
     const res = await fetch(`${esUrl}/${indexName}`);
     if (res.status === 200) {
       setIndexStatus('exists');
@@ -118,7 +133,7 @@ export default function CorePanel() {
             url: { type: 'keyword' },
             snippet: { type: 'text' },
             scraped_at: { type: 'date' },
-            ...(embeddingEnabled ? { embedding: { type: 'dense_vector', dims: 768, index: true, similarity: 'cosine' } } : {}),
+            ...(embeddingEnabled ? { embedding: { type: 'dense_vector', dims, index: true, similarity: 'cosine' } } : {}),
           }
         }
       };
@@ -129,7 +144,7 @@ export default function CorePanel() {
       });
       if (createRes.ok) {
         setIndexStatus('created');
-        addLog(`Index "${indexName}" created${embeddingEnabled ? ' (with dense_vector)' : ''}`, 'ok');
+        addLog(`Index "${indexName}" created${embeddingEnabled ? ` (dense_vector ${dims}d)` : ''}`, 'ok');
         return true;
       }
     }
@@ -160,7 +175,8 @@ export default function CorePanel() {
     const json = await res.json();
     return json
       .map(i => i.index)
-      .filter(name => !name.startsWith(INDEX_PREFIX) && !name.startsWith('.'));
+      // Skip generated cores (knowledge_core_*) and user personal cores (<preset>_core_<user id>)
+      .filter(name => !name.startsWith(INDEX_PREFIX) && !name.startsWith('.') && !/_core_/.test(name));
   }, []);
 
   // Search across all source indices for a query term — wide net, up to 200 hits
@@ -207,8 +223,20 @@ export default function CorePanel() {
     const esEp = esEndpoints[activeES];
     if (!esEp) { addLog('Configure an Elasticsearch endpoint first', 'error'); return; }
 
-    const indexName = INDEX_PREFIX + state.coreName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    const ok = await ensureIndex(esEp.url, indexName, state.embeddingEnabled);
+    const indexName = state.activePersonal || coreIndexName(state.coreName);
+
+    // Auto-detect the embedding dimension from the model so the mapping always matches
+    let dims = 768;
+    if (state.embeddingEnabled) {
+      try {
+        const probe = await generateEmbedding('dimension probe');
+        if (probe?.length) { dims = probe.length; addLog(`Embedding dimensions auto-detected: ${dims}`, 'ok'); }
+      } catch (e) {
+        addLog(`Dimension probe failed (${e.message}) — defaulting to 768`, 'warn');
+      }
+    }
+
+    const ok = await ensureIndex(esEp.url, indexName, state.embeddingEnabled, dims);
     if (!ok) return;
 
     // Discover source indices once
@@ -308,9 +336,33 @@ export default function CorePanel() {
     setNewQuery('');
   };
   const removeQuery = (q) => setState(prev => ({ ...prev, queries: prev.queries.filter(x => x !== q) }));
-  const indexName = INDEX_PREFIX + state.coreName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
+  // Selecting a preset opens the refiner — a message turns it into a refined personal core
+  const applyPreset = useCallback((preset) => {
+    setState(prev => ({ ...prev, coreName: preset.name, activePersonal: '' }));
+    setRefining(preset);
+    addLog(`Preset "${preset.label}" selected — refine it into a personal core`, 'dim');
+  }, [addLog]);
+
+  const applyRefinedQueries = useCallback((keywords) => {
+    setState(prev => ({ ...prev, queries: [...new Set([...keywords, ...prev.queries])] }));
+    addLog(`${keywords.length} refined keywords added to the query queue`, 'ok');
+  }, [addLog]);
+  const indexName = state.activePersonal || coreIndexName(state.coreName);
   const logColors = { info: 'rgba(0,255,204,0.6)', ok: '#00cc66', warn: '#ffaa00', error: '#ff4444', dim: 'rgba(0,255,204,0.3)' };
   const esEp = esEndpoints[activeES];
+
+  // The target index state resolves itself — no ingestion run needed to find out
+  useEffect(() => {
+    if (!esEp?.url) { setIndexStatus('unknown'); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`${esEp.url}/${indexName}`);
+        setIndexStatus(res.status === 200 ? 'exists' : res.status === 404 ? 'missing' : 'error');
+      } catch { setIndexStatus('error'); }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [esEp?.url, indexName]);
 
   return (
     <div className="tactical-panel rounded p-4 flex flex-col gap-4" style={{ minHeight: '80vh' }}>
@@ -336,6 +388,7 @@ export default function CorePanel() {
           activeES={activeES}
           embeddingUrl={state.embeddingUrl}
           embeddingModel={state.embeddingModel}
+          summaryModel={state.summaryModel}
           embeddingEnabled={state.embeddingEnabled}
         />
       )}
@@ -368,22 +421,59 @@ export default function CorePanel() {
           {/* LEFT — Config */}
           <div className="flex flex-col gap-3 lg:w-80">
 
+            <CorePresets activeCoreName={state.coreName} onSelect={applyPreset} />
+
+            <PersonalCores
+              esUrl={esEp?.url}
+              userId={userId}
+              onQueue={applyRefinedQueries}
+              onSelectCore={(index) => {
+                setState(prev => ({ ...prev, activePersonal: index }));
+                addLog(`Current core → personal ${index}`, 'ok');
+              }}
+              log={addLog}
+            />
+
+            {refining && (
+              <CoreRefiner
+                preset={refining}
+                esUrl={esEp?.url}
+                ollamaUrl={aiEndpoint || state.embeddingUrl}
+                model={aiModel || state.summaryModel}
+                userId={userId}
+                onApply={applyRefinedQueries}
+                onClose={() => setRefining(null)}
+                log={addLog}
+              />
+            )}
+
             {/* Core name */}
             <div>
               <div style={{ fontSize: '0.6rem', color: 'rgba(0,255,204,0.35)', letterSpacing: '2px', marginBottom: 5 }}>CORE NAME</div>
               <input type="text" value={state.coreName}
-                onChange={e => setState(prev => ({ ...prev, coreName: e.target.value }))}
+                onChange={e => setState(prev => ({ ...prev, coreName: e.target.value, activePersonal: '' }))}
                 placeholder="default"
                 style={{ width: '100%', padding: '6px 10px', borderRadius: 3, fontSize: '0.8rem', letterSpacing: '1px' }}
-              />
-              <div style={{ fontSize: '0.58rem', color: 'rgba(0,255,204,0.25)', marginTop: 4, letterSpacing: '1px' }}>
+              />              <div style={{ fontSize: '0.58rem', color: 'rgba(0,255,204,0.25)', marginTop: 4, letterSpacing: '1px' }}>
                 Index: <span style={{ color: 'rgba(0,255,204,0.5)' }}>{indexName}</span>
                 {indexStatus !== 'unknown' && (
-                  <span style={{ marginLeft: 8, color: indexStatus === 'error' ? '#ff4444' : '#00cc66' }}>
-                    {indexStatus === 'exists' ? '✓ EXISTS' : indexStatus === 'created' ? '✓ CREATED' : '✗ ERROR'}
+                  <span style={{ marginLeft: 8, color: indexStatus === 'error' ? '#ff4444' : indexStatus === 'missing' ? 'rgba(0,255,204,0.4)' : '#00cc66' }}>
+                    {indexStatus === 'exists' ? '✓ EXISTS' : indexStatus === 'created' ? '✓ CREATED' : indexStatus === 'missing' ? '○ NOT BUILT' : '✗ ERROR'}
                   </span>
                 )}
               </div>
+              {state.activePersonal && (
+                <div className="flex items-center gap-2" style={{ marginTop: 6, padding: '4px 7px', borderRadius: 3, background: 'rgba(0,255,204,0.06)', border: '1px solid rgba(0,255,204,0.2)' }}>
+                  <span style={{ flex: 1, fontSize: '0.56rem', color: 'var(--neon-primary)', letterSpacing: '1.2px' }}>
+                    ◈ PERSONAL CORE ACTIVE
+                  </span>
+                  <button
+                    onClick={() => { setState(prev => ({ ...prev, activePersonal: '' })); addLog('Current core → named core', 'dim'); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(0,255,204,0.5)', fontFamily: 'Rajdhani, sans-serif', fontSize: '0.58rem', letterSpacing: '1px' }}>
+                    ✕ CLEAR
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* ES endpoint */}
@@ -397,6 +487,11 @@ export default function CorePanel() {
                     <button key={i} onClick={() => setActiveES(i)}
                       style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.65rem', letterSpacing: '1px', padding: '3px 9px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${i === activeES ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, background: i === activeES ? 'rgba(0,255,204,0.08)' : 'transparent', color: i === activeES ? 'var(--neon-primary)' : 'rgba(0,255,204,0.45)' }}>{e.label}</button>
                   ))}
+                </div>
+              )}
+              {esEp?.url && (
+                <div style={{ fontSize: '0.55rem', color: 'rgba(0,255,204,0.25)', marginTop: 4, letterSpacing: '1px', wordBreak: 'break-all' }}>
+                  ACTIVE DB: <span style={{ color: 'rgba(0,255,204,0.5)' }}>{esEp.url}</span>
                 </div>
               )}
             </div>
