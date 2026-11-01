@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import { THEMES } from './ThemeSwitcher';
 
@@ -12,10 +12,20 @@ const TABS = [
   { id: 'core',     label: '◉ CORE' },
 ];
 
+// Every page outside the tab switcher lives in one combined select box
+const PAGES = [
+  { path: '/interaction-logs',  label: '◈ LOGS' },
+  { path: '/knowledge-presets', label: '⬡ PRESETS' },
+  { path: '/data-export',       label: '⇩ EXPORT' },
+];
+
 export default function Navbar({ activeTab, onTabChange, activeTheme, onThemeChange, onArchiveToggle, archiveCount = 0, onVoiceOpen, onMemoryOpen }) {
   const [themeOpen, setThemeOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const themeRef = useRef(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activePage = PAGES.find(p => p.path === location.pathname);
 
   useEffect(() => {
     const handler = (e) => { if (themeRef.current && !themeRef.current.contains(e.target)) setThemeOpen(false); };
@@ -62,6 +72,19 @@ export default function Navbar({ activeTab, onTabChange, activeTheme, onThemeCha
           ))}
         </div>
 
+        {/* Pages — all secondary routes combined into one select box */}
+        <select
+          value={activePage?.path || ''}
+          onChange={e => { if (e.target.value) navigate(e.target.value); }}
+          aria-label="Pages"
+          style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.62rem', letterSpacing: '2px', textTransform: 'uppercase', padding: '4px 6px', borderRadius: 3, border: `1px solid ${activePage ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, color: activePage ? 'var(--neon-primary)' : 'rgba(0,255,204,0.55)', background: activePage ? 'rgba(0,255,204,0.07)' : 'rgba(0,20,20,0.8)', cursor: 'pointer', flexShrink: 0, maxWidth: 128 }}
+        >
+          <option value="">▤ PAGES</option>
+          {PAGES.map(p => (
+            <option key={p.path} value={p.path}>{p.label}</option>
+          ))}
+        </select>
+
         {/* Hamburger (utility drawer toggle) */}
         <button
           onClick={() => setMenuOpen(v => !v)}
@@ -105,9 +128,6 @@ export default function Navbar({ activeTab, onTabChange, activeTheme, onThemeCha
           <button style={utilBtn} onClick={() => { onArchiveToggle(); setMenuOpen(false); }}>
             ◷ ARCHIVE{archiveCount > 0 && ` (${archiveCount})`}
           </button>
-          <Link to="/interaction-logs" style={utilBtn} onClick={() => setMenuOpen(false)}>◈ LOGS</Link>
-          <Link to="/knowledge-presets" style={utilBtn} onClick={() => setMenuOpen(false)}>⬡ PRESETS</Link>
-          <Link to="/data-export" style={utilBtn} onClick={() => setMenuOpen(false)}>⇩ EXPORT</Link>
         </div>
       )}
     </nav>

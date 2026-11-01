@@ -7,6 +7,9 @@ import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 // Add page imports here
 import Home from './pages/Home';
+import InteractionLogs from './pages/InteractionLogs';
+import KnowledgePresets from './pages/KnowledgePresets';
+import DataExport from './pages/DataExport';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -35,6 +38,9 @@ const AuthenticatedApp = () => {
   return (
     <Routes>
       <Route path="/" element={<Home />} />
+      <Route path="/interaction-logs" element={<InteractionLogs />} />
+      <Route path="/knowledge-presets" element={<KnowledgePresets />} />
+      <Route path="/data-export" element={<DataExport />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );

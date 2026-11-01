@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import CanvasOutput from './CanvasOutput';
-import { Play, Square, Trash2 } from 'lucide-react';
+import { Play, Square, Trash2, Ban } from 'lucide-react';
 import MissionBrief from './MissionBrief';
 import OutputViewer from './OutputViewer';
 import PromptLibrary from './PromptLibrary';
@@ -15,7 +15,7 @@ const TEMPLATES = {
 
 export default function ChatPanel({
   prompt, onPromptChange, output, onRun, onCancel, isGenerating, stats,
-  missionBriefItems = [], onMissionBriefChange, focusInputTrigger = 0,
+  missionBriefItems = [], onMissionBriefChange, focusInputTrigger = 0, onCancelAll,
 }) {
   const [showCanvas, setShowCanvas] = useState(false);
   const textareaRef = useRef(null);
@@ -123,6 +123,14 @@ export default function ChatPanel({
             <Square size={14} /> CANCEL
           </button>
         )}
+        <button
+          className="neon-btn neon-btn-danger px-3 py-2 rounded text-xs tracking-widest flex items-center gap-1"
+          onClick={onCancelAll}
+          title="Abort every in-flight AI request and stop speech"
+          data-desc="Cancel All AI Activity"
+        >
+          <Ban size={14} /> CANCEL ALL
+        </button>
         <button
           className="neon-btn px-3 py-2 rounded text-sm flex items-center gap-1"
           onClick={() => onPromptChange('')}

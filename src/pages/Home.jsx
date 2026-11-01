@@ -20,11 +20,19 @@ import VoiceConfigPanel, { loadVoiceConfig } from '../components/tools/VoiceConf
 import MemoryInspector, { extractKeywords, scoreMemory } from '../components/tools/MemoryInspector';
 import Navbar from '../components/tools/Navbar';
 import { useLocalStorage } from '../hooks/useLocalStorage';
+import { client } from '@/apis/client';
+import { OLLAMA_PROXY_URL, resolveLocalEndpoints } from '@/lib/localProxies';
+import { loadEsEndpoints } from '@/lib/esEndpoints';
+import { fetchOrbComment } from '@/lib/orbComment';
+import { createAIRequest, abortAllAI } from '@/lib/aiAbort';
 
 export const STATE = { idle: 0, listening: 1, thinking: 2, speaking: 3, crisis: 4 };
 
+// Keeps the boot overlay from replaying on in-app navigation (resets on a full reload)
+let sessionBooted = false;
+
 const CONFIG = {
-  endpoint: 'http://localhost:11434',
+  endpoint: OLLAMA_PROXY_URL,
   defaultModel: 'llama3:latest',
   silenceThreshold: 800,
   crisisKeywords: ['kill myself', 'suicide', 'end my life', 'die', 'hurt myself', 'overdose'],
@@ -32,10 +40,17 @@ const CONFIG = {
   systemPrompt: 'You are Tactical, an AI counselor. Be wise, empathetic, and very concise (1-2 sentences max).',
 };
 
+// Case-insensitive word-boundary match against the crisis keyword list
+export function matchesCrisis(text) {
+  return CONFIG.crisisKeywords.some(word =>
+    new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)
+  );
+}
+
 export const DEFAULT_ORB_SETTINGS = {
   listeningEnabled: true,
   recognitionLang: 'en-US',
-  speechRate: 0.9,
+  speechRate: 1.0,
   speechPitch: 1.0,
   filamentCount: 180,
   animSpeed: 0.05,
@@ -49,7 +64,7 @@ export const DEFAULT_ORB_SETTINGS = {
 };
 
 export default function Home() {
-  const [initialized, setInitialized] = useState(false);
+  const [initialized, setInitialized] = useState(sessionBooted);
   const [orbMode, setOrbMode] = useState(STATE.idle);
   const [statusText, setStatusText] = useState('SYSTEM OFFLINE');
   const [transcript, setTranscript] = useState('');
@@ -83,6 +98,7 @@ export default function Home() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [transcriptLog, setTranscriptLog] = useLocalStorage('tactical_transcript_log', []);
   const [longTermMemory, setLongTermMemory] = useLocalStorage('tactical_ltm', []);
+  const [sheetId, setSheetId] = useLocalStorage('tactical_sheet_id', '');
 
   // Apply saved voice config to speech params
   useEffect(() => {
@@ -240,7 +256,44 @@ export default function Home() {
     } finally { reader.releaseLock(); }
   }
 
+  // ─── GOOGLE SHEETS LOGGING ──────────────────────────────────────────────────
+  const sheetIdRef = useRef(sheetId);
+  useEffect(() => { sheetIdRef.current = sheetId; }, [sheetId]);
+
+  const saveResponseToSheet = useCallback(async (promptText, responseText, model, tokens, timeTaken) => {
+    const sid = sheetIdRef.current;
+    if (!sid) return;
+    try {
+      await client.functions.invoke('logToSheet', {
+        spreadsheetId: sid,
+        prompt: promptText,
+        response: responseText,
+        model,
+        datetime: new Date().toISOString(),
+        tokens,
+        timeTaken,
+      });
+    } catch {}
+  }, []);
+
   // ─── OLLAMA ─────────────────────────────────────────────────────────────────
+  const saveResponseToES = useCallback(async (promptText, responseText, model) => {
+    try {
+      const esEp = loadEsEndpoints()[0];
+      if (!esEp?.url) return;
+      await fetch(`${esEp.url}/ai_responses/_doc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptText,
+          response: responseText,
+          model,
+          datetime: new Date().toISOString(),
+        }),
+      });
+    } catch {}
+  }, []);
+
   const fetchModels = useCallback(async (ep = endpoint) => {
     setStatusIndicator('warning');
     try {
@@ -260,10 +313,40 @@ export default function Home() {
     }
   }, [endpoint]);
 
-  const runGeneration = useCallback(async () => {
-    if (!prompt.trim() || !selectedModel) return;
+  // The orb remarks on a finished text-chat answer in one short spoken line
+  const speakOrbComment = useCallback(async (promptText, resultText) => {
+    const aiReq = createAIRequest();
+    try {
+      const comment = await fetchOrbComment({
+        endpoint,
+        model: selectedModel || CONFIG.defaultModel,
+        prompt: promptText,
+        result: resultText,
+        persona: systemPromptRef.current,
+        signal: aiReq.signal,
+      });
+      speakTextRef.current?.(comment || 'Response ready.');
+    } catch {
+      // A cancelled comment stays silent
+      if (!aiReq.signal.aborted) speakTextRef.current?.('Response ready.');
+    } finally {
+      aiReq.release();
+    }
+  }, [endpoint, selectedModel]);
+
+  const runGeneration = useCallback(async (messageOverride) => {
+    // Typed in the chat field or spoken through the orb — the chat field text is what runs
+    const userMessage = (typeof messageOverride === 'string' ? messageOverride : prompt).trim();
+    if (!userMessage || !selectedModel) return null;
     if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
+    const aiReq = createAIRequest();
+    abortRef.current = aiReq.controller;
+    // The listening orb takes the message: it hears it, stays silent on it
+    clearTimeout(silenceTimerRef.current);
+    try { recognitionRef.current?.stop(); } catch {}
+    setTranscript(`"${userMessage}"`);
+    setOrbMode(STATE.thinking);
+    setStatusText('PROCESSING...');
     setIsGenerating(true);
     setOutput('');
     setStatusIndicator('warning');
@@ -271,11 +354,16 @@ export default function Home() {
     const startTime = Date.now();
     let text = '';
     try {
+      const pinnedFacts = (missionBriefRef.current || []).filter(i => i.pinned);
+      const missionContext = pinnedFacts.length > 0
+        ? `\n\n=== MISSION BRIEF (prioritize these facts in every response) ===\n${pinnedFacts.map(f => `[${f.category}] ${f.title}: ${f.content}`).join('\n')}\n===`
+        : '';
+      const systemContent = systemPromptRef.current + missionContext;
       const res = await fetch(`${endpoint}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selectedModel, messages: [{ role: 'user', content: prompt.trim() }], stream: true }),
-        signal: abortRef.current.signal,
+        body: JSON.stringify({ model: selectedModel, messages: [{ role: 'system', content: systemContent }, { role: 'user', content: userMessage }], stream: true }),
+        signal: aiReq.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await processSSEStream(res, (delta) => { text += delta; setOutput(text); }, (totalTokens) => {
@@ -283,23 +371,50 @@ export default function Home() {
         const toks = totalTokens || text.split(/\s+/).length;
         setStats({ model: selectedModel, time: `${dur.toFixed(2)}s`, tokens: toks, throughput: Math.round(toks / dur) });
         setStatusIndicator('success');
+        saveResponseToES(userMessage, text, selectedModel);
+        saveResponseToSheet(userMessage, text, selectedModel, toks, `${dur.toFixed(2)}s`);
+        speakOrbComment(userMessage, text);
       });
+      return text;
     } catch (e) {
       setStatusIndicator(e.name === 'AbortError' ? 'warning' : 'error');
+      // No comment when the run was cancelled — just hand the orb back to listening
+      setOrbMode(listeningEnabledRef.current ? STATE.listening : STATE.idle);
+      setStatusText(listeningEnabledRef.current ? 'LISTENING...' : 'STANDBY');
+      if (listeningEnabledRef.current) { try { recognitionRef.current?.start(); } catch {} }
+      return null;
     } finally {
+      aiReq.release();
       setIsGenerating(false);
       abortRef.current = null;
     }
-  }, [endpoint, selectedModel, prompt]);
+  }, [endpoint, selectedModel, prompt, speakOrbComment]);
 
   const cancelGeneration = () => { if (abortRef.current) abortRef.current.abort(); };
+
+  // Aborts every in-flight OpenAI-conform request, stops speech and hands the orb back
+  const cancelAll = useCallback(() => {
+    abortAllAI();
+    clearTimeout(silenceTimerRef.current);
+    synthRef.current?.cancel();
+    try { recognitionRef.current?.stop(); } catch {}
+    setIsGenerating(false);
+    document.documentElement.style.setProperty('--iris-primary', '#00ffcc');
+    setOrbMode(listeningEnabledRef.current ? STATE.listening : STATE.idle);
+    setStatusText(listeningEnabledRef.current ? 'LISTENING...' : 'STANDBY');
+    setStatusIndicator('idle');
+    if (listeningEnabledRef.current) {
+      setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 100);
+    }
+  }, []);
 
   const pullModel = useCallback(async (name) => {
     if (!name.trim()) return;
     setOutput('Pulling model...\n');
     setStatusIndicator('warning');
+    const aiReq = createAIRequest();
     try {
-      const res = await fetch(`${endpoint}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) });
+      const res = await fetch(`${endpoint}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }), signal: aiReq.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -319,8 +434,11 @@ export default function Home() {
         }
       }
     } catch (e) {
-      setOutput(prev => prev + `Error: ${e.message}\n`);
-      setStatusIndicator('error');
+      const aborted = e.name === 'AbortError';
+      setOutput(prev => prev + (aborted ? 'Pull cancelled.\n' : `Error: ${e.message}\n`));
+      setStatusIndicator(aborted ? 'warning' : 'error');
+    } finally {
+      aiReq.release();
     }
   }, [endpoint, fetchModels]);
 
@@ -376,12 +494,10 @@ export default function Home() {
   speakTextRef.current = speakText;
 
   const queryBrain = useCallback(async (userInput) => {
-    for (const word of CONFIG.crisisKeywords) {
-      if (userInput.toLowerCase().includes(word)) {
-        setOrbMode(STATE.crisis);
-        document.documentElement.style.setProperty('--iris-primary', '#ff0000');
-        return CONFIG.crisisResponse;
-      }
+    if (matchesCrisis(userInput)) {
+      setOrbMode(STATE.crisis);
+      document.documentElement.style.setProperty('--iris-primary', '#ff0000');
+      return CONFIG.crisisResponse;
     }
     setOrbMode(STATE.thinking);
     updateStatus('PROCESSING...');
@@ -407,16 +523,20 @@ export default function Home() {
       ...memoryRef.current.slice(-3).flatMap(m => ([{ role: 'user', content: m.user }, { role: 'assistant', content: m.ai }])),
       { role: 'user', content: userInput },
     ];
+    const aiReq = createAIRequest();
     try {
       const res = await fetch(`${endpoint}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: selectedModel || CONFIG.defaultModel, messages, stream: false }),
+        signal: aiReq.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content || '';
       memoryRef.current.push({ user: userInput, ai: reply });
+      saveResponseToES(userInput, reply, selectedModel || CONFIG.defaultModel);
+      saveResponseToSheet(userInput, reply, selectedModel || CONFIG.defaultModel);
       // Save to long-term memory
       const keywords = [...new Set([...extractKeywords(userInput), ...extractKeywords(reply)])];
       setLongTermMemory(prev => [...prev.slice(-199), { id: Date.now(), user: userInput, ai: reply, keywords, timestamp: Date.now(), tags: [], pinned: false }]);
@@ -424,21 +544,32 @@ export default function Home() {
       return reply;
     } catch {
       return 'I am sensing a disturbance in the network. Please try again.';
+    } finally {
+      aiReq.release();
     }
   }, [endpoint, selectedModel]);
 
+  // Spoken input lands in the chat field, runs through the chat pipeline,
+  // and the orb only adds a short comment once the answer is finished.
   const processUserSpeech = useCallback(async (text) => {
-    if (!text || text.trim().length < 1) {
+    const spoken = (text || '').trim();
+    if (!spoken) {
       setOrbMode(STATE.listening);
       try { recognitionRef.current?.start(); } catch {}
       return;
     }
-    setOrbMode(STATE.thinking);
-    updateStatus('ANALYZING...');
-    const answer = await queryBrain(text);
-    setTranscriptLog(prev => [...prev, { id: Date.now(), user: text, ai: answer, timestamp: Date.now() }]);
-    speakText(answer);
-  }, [queryBrain, speakText]);
+    setPrompt(spoken);
+    if (matchesCrisis(spoken)) {
+      setOrbMode(STATE.crisis);
+      document.documentElement.style.setProperty('--iris-primary', '#ff0000');
+      speakText(CONFIG.crisisResponse);
+      return;
+    }
+    const answer = await runGeneration(spoken);
+    if (answer) {
+      setTranscriptLog(prev => [...prev, { id: Date.now(), user: spoken, ai: answer, timestamp: Date.now() }]);
+    }
+  }, [runGeneration, setPrompt, setTranscriptLog, speakText]);
 
   const setupSpeechRecognition = useCallback(() => {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -458,6 +589,8 @@ export default function Home() {
       const lastResult = event.results[event.results.length - 1];
       currentTranscriptRef.current = lastResult[0].transcript;
       setTranscript(`"${currentTranscriptRef.current}"`);
+      // The orb reads what it hears straight into the chat input field
+      setPrompt(currentTranscriptRef.current);
       silenceTimerRef.current = setTimeout(() => {
         rec.stop();
         processUserSpeech(currentTranscriptRef.current);
@@ -469,7 +602,7 @@ export default function Home() {
       }
     };
     recognitionRef.current = rec;
-  }, [processUserSpeech]);
+  }, [processUserSpeech, setPrompt]);
 
   // ─── MEDIA ───────────────────────────────────────────────────────────────────
   const handleImportFiles = useCallback(async (e) => {
@@ -528,9 +661,13 @@ export default function Home() {
   }, [speakText]);
 
   // ─── INIT ────────────────────────────────────────────────────────────────────
-  const boot = useCallback(() => {
+  const boot = useCallback(async () => {
+    sessionBooted = true;
     setInitialized(true);
-    fetchModels();
+    // Diagnostics already resolved the endpoints — reuse that result instead of probing again
+    const targets = await resolveLocalEndpoints();
+    setEndpoint(targets.ollama);
+    fetchModels(targets.ollama);
     synthRef.current?.getVoices();
     setupSpeechRecognition();
     setOrbMode(STATE.speaking);
@@ -668,12 +805,24 @@ export default function Home() {
                   onFetchInfo={fetchModelInfo}
                   statusIndicator={statusIndicator}
                 />
+                <div className="tactical-panel rounded px-3 py-2 flex items-center gap-2">
+                  <span style={{ fontSize: '0.6rem', color: 'rgba(0,255,204,0.4)', letterSpacing: '2px', whiteSpace: 'nowrap' }}>📊 SHEET ID</span>
+                  <input
+                    type="text"
+                    value={sheetId}
+                    onChange={e => setSheetId(e.target.value)}
+                    placeholder="Paste Google Spreadsheet ID to log responses..."
+                    style={{ flex: 1, padding: '4px 8px', borderRadius: 3, fontSize: '0.72rem' }}
+                  />
+                  {sheetId && <span style={{ fontSize: '0.58rem', color: '#00cc66', letterSpacing: '1px', whiteSpace: 'nowrap' }}>● ACTIVE</span>}
+                </div>
                 <ChatPanel
                   prompt={prompt}
                   onPromptChange={setPrompt}
                   output={output}
                   onRun={runGeneration}
                   onCancel={cancelGeneration}
+                  onCancelAll={cancelAll}
                   isGenerating={isGenerating}
                   stats={stats}
                   missionBriefItems={missionBriefItems}
@@ -707,7 +856,7 @@ export default function Home() {
           )}
 
           {activeTab === 'core' && (
-            <div className="max-w-6xl mx-auto w-full"><CorePanel /></div>
+            <div className="max-w-6xl mx-auto w-full"><CorePanel aiEndpoint={endpoint} aiModel={selectedModel} /></div>
           )}
 
           {activeTab === 'media' && (

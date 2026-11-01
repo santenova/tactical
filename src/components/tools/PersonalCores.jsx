@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Library, RefreshCw, Trash2, Plus, Save, Download, ChevronRight, ChevronDown } from 'lucide-react';
 
 const chip = { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', padding: '2px 8px', borderRadius: 10, border: '1px solid rgba(0,255,204,0.25)', color: 'rgba(0,255,204,0.75)', fontFamily: 'Rajdhani, sans-serif', letterSpacing: '1px' };
@@ -19,6 +19,11 @@ export default function PersonalCores({ esUrl, userId, onQueue, onSelectCore, lo
   const [error, setError] = useState('');
 
   const ownSuffix = String(userId || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
+
+  // Explicit core selections push the core's stored keywords into the ingest queue once loaded
+  const activateRef = useRef('');
+  const queueRef = useRef(onQueue);
+  useEffect(() => { queueRef.current = onQueue; }, [onQueue]);
 
   const loadCores = useCallback(async () => {
     if (!esUrl) { setCores([]); return; }
@@ -55,10 +60,16 @@ export default function PersonalCores({ esUrl, userId, onQueue, onSelectCore, lo
       });
       if (!res.ok) { setSets([]); return; }
       const json = await res.json();
-      setSets((json.hits?.hits || [])
+      const list = (json.hits?.hits || [])
         .map(h => ({ id: h._id, ...h._source }))
-        .sort((a, b) => String(b.created_date || '').localeCompare(String(a.created_date || ''))));
+        .sort((a, b) => String(b.created_date || '').localeCompare(String(a.created_date || '')));
+      setSets(list);
       setDirty({});
+      if (activateRef.current === selected) {
+        activateRef.current = '';
+        const kws = [...new Set(list.flatMap(s => s.keywords || []))];
+        if (kws.length) queueRef.current?.(kws);
+      }
     } catch { setSets([]); }
     finally { setSetsLoading(false); }
   }, [esUrl, selected]);
@@ -129,7 +140,17 @@ export default function PersonalCores({ esUrl, userId, onQueue, onSelectCore, lo
         {cores.map(c => {
           const on = selected === c.index;
           return (
-            <button key={c.index} onClick={() => { setSelected(c.index); setExpanded(''); onSelectCore?.(c.index); }}
+            <button key={c.index} onClick={() => {
+              setExpanded('');
+              onSelectCore?.(c.index);
+              if (c.index === selected) {
+                const kws = [...new Set(sets.flatMap(s => s.keywords || []))];
+                if (kws.length) onQueue?.(kws);
+              } else {
+                activateRef.current = c.index;
+                setSelected(c.index);
+              }
+            }}
               title={`${c.index} — ${c.docs} saved sets`}
               style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.6rem', letterSpacing: '1px', padding: '3px 8px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${on ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, background: on ? 'rgba(0,255,204,0.08)' : 'transparent', color: on ? 'var(--neon-primary)' : 'rgba(0,255,204,0.45)' }}>
               {c.index.replace(/_core_.*$/, '')}

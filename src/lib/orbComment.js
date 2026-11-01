@@ -1,6 +1,7 @@
 // Asks the local model for a single short spoken remark about a finished answer.
 // Keep it brief — this is the orb's one-liner, not a second answer.
-export async function fetchOrbComment({ endpoint, model, prompt, result, persona }) {
+export async function fetchOrbComment({ endpoint, model, prompt, result, persona, signal }) {
+  const timeout = AbortSignal.timeout(20000);
   const res = await fetch(`${endpoint}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -18,7 +19,7 @@ export async function fetchOrbComment({ endpoint, model, prompt, result, persona
       ],
       stream: false,
     }),
-    signal: AbortSignal.timeout(20000),
+    signal: signal && AbortSignal.any ? AbortSignal.any([signal, timeout]) : (signal || timeout),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
