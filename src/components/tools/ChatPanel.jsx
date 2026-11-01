@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import CanvasOutput from './CanvasOutput';
 import { Play, Square, Trash2, Ban } from 'lucide-react';
 import MissionBrief from './MissionBrief';
-import OutputViewer from './OutputViewer';
 import PromptLibrary from './PromptLibrary';
 import PromptHistory from './PromptHistory';
+import MessageStream from './MessageStream';
+import ConversationList from './ConversationList';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 
 const TEMPLATES = {
@@ -14,17 +15,28 @@ const TEMPLATES = {
 };
 
 export default function ChatPanel({
-  prompt, onPromptChange, output, onRun, onCancel, isGenerating, stats,
-  missionBriefItems = [], onMissionBriefChange, focusInputTrigger = 0, onCancelAll,
+  prompt, onPromptChange, output, onRun, onCancel, onCancelAll, isGenerating, stats,
+  messages = [], streamingText = '', streamingConversationId = '',
+  conversations = [], activeConversationId = '',
+  onSelectConversation, onNewConversation, onDeleteConversation,
+  missionBriefItems = [], onMissionBriefChange, focusInputTrigger = 0,
 }) {
   const [showCanvas, setShowCanvas] = useState(false);
+  const [varDialog, setVarDialog] = useState(null); // { vars: string[], values: {[k]:string} }
   const textareaRef = useRef(null);
+
+  const [history, setHistory] = useLocalStorage('tactical_history', []);
+  // Library items are edited in their own panel — re-read them whenever the picker opens
+  const [library, setLibrary] = useState([]);
+  const refreshLibrary = useCallback(() => {
+    try { setLibrary(JSON.parse(localStorage.getItem('tactical_prompt_library')) || []); } catch { setLibrary([]); }
+  }, []);
+  useEffect(() => { refreshLibrary(); }, [refreshLibrary]);
+
   useEffect(() => {
     if (focusInputTrigger === 0) return;
     setTimeout(() => textareaRef.current?.focus(), 50);
   }, [focusInputTrigger]);
-
-  const [varDialog, setVarDialog] = useState(null); // { vars: string[], values: {[k]:string} }
 
   const handleRun = useCallback(() => {
     const found = [...new Set((prompt.match(/\[([A-Za-z][\w\s]*)\]/g) || []).map(m => m.slice(1, -1)))];
@@ -45,7 +57,6 @@ export default function ChatPanel({
     setVarDialog(null);
     setTimeout(() => onRun(), 0);
   }, [varDialog, prompt, onPromptChange, onRun]);
-  const [history, setHistory] = useLocalStorage('tactical_history', []);
 
   useEffect(() => {
     if (!isGenerating && output && stats.model !== '-' && stats.time !== '-') {
@@ -64,42 +75,101 @@ export default function ChatPanel({
     }
   }, [isGenerating]);
 
+  // One picker for every ready-to-use prompt: built-ins, saved library items and recent runs
   const handleTemplate = (e) => {
-    const tpl = TEMPLATES[e.target.value];
-    if (tpl) onPromptChange(tpl);
+    const value = e.target.value;
     e.target.value = '';
-  };
-
-  const handleLoad = (item) => {
-    onPromptChange(item.prompt);
+    if (!value) return;
+    const sep = value.indexOf(':');
+    const kind = value.slice(0, sep);
+    const key = value.slice(sep + 1);
+    let content = '';
+    if (kind === 'builtin') content = TEMPLATES[key] || '';
+    else if (kind === 'library') content = library.find(t => String(t.id) === key)?.content || '';
+    else if (kind === 'history') content = history.find(h => String(h.id) === key)?.prompt || '';
+    if (content) onPromptChange(content);
   };
 
   return (
     <div className="tactical-panel rounded p-4 flex flex-col gap-3">
+      {/* Conversation history */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs tracking-widest uppercase flex-shrink-0" style={{ color: 'rgba(0,255,204,0.4)' }}>CONVERSATION</span>
+        <ConversationList
+          conversations={conversations}
+          activeId={activeConversationId}
+          onSelect={onSelectConversation}
+          onNew={onNewConversation}
+          onDelete={onDeleteConversation}
+        />
+        <span className="text-xs tracking-widest flex-shrink-0" style={{ color: 'rgba(0,255,204,0.25)' }}>
+          {messages.length} MSG
+        </span>
+      </div>
+
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs tracking-widest text-muted-foreground uppercase flex-shrink-0">TEMPLATE</span>
-        <select className="flex-1 min-w-0 px-2 py-1 rounded text-xs" onChange={handleTemplate} defaultValue="">
-          <option value="" disabled>Select template...</option>
-          <option value="coding">Coding (HTML)</option>
-          <option value="explanation">Explanation</option>
-          <option value="creative">Creative Writing</option>
+        <select
+          className="flex-1 min-w-0 px-2 py-1 rounded text-xs"
+          onChange={handleTemplate}
+          onMouseDown={refreshLibrary}
+          onFocus={refreshLibrary}
+          defaultValue=""
+          title="Load a built-in template, a library prompt, or a recent run"
+        >
+          <option value="" disabled>Select prompt...</option>
+          <optgroup label="Built-in templates">
+            <option value="builtin:coding">Coding (HTML)</option>
+            <option value="builtin:explanation">Explanation</option>
+            <option value="builtin:creative">Creative Writing</option>
+          </optgroup>
+          {library.length > 0 && (
+            <optgroup label={`Library (${library.length})`}>
+              {library.map(t => (
+                <option key={t.id} value={`library:${t.id}`}>{t.name}{t.category ? ` · ${t.category}` : ''}</option>
+              ))}
+            </optgroup>
+          )}
+          {history.length > 0 && (
+            <optgroup label={`Recent runs (${history.length})`}>
+              {[...history].reverse().map(h => {
+                const text = String(h.prompt || '').replace(/\s+/g, ' ').trim();
+                return <option key={h.id} value={`history:${h.id}`}>{text.slice(0, 60)}{text.length > 60 ? '…' : ''}</option>;
+              })}
+            </optgroup>
+          )}
         </select>
         <MissionBrief items={missionBriefItems} onChange={onMissionBriefChange} />
         <PromptHistory
           history={history}
-          onLoad={handleLoad}
+          onLoad={(item) => onPromptChange(item.prompt)}
           onClear={() => setHistory([])}
         />
         <PromptLibrary onInsert={onPromptChange} />
       </div>
 
+      <div className="flex items-center justify-between">
+        <span className="text-xs tracking-widest uppercase neon-text">TRANSCRIPT</span>
+        <button
+          onClick={() => setShowCanvas(v => !v)}
+          style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.6rem', letterSpacing: '2px', padding: '2px 9px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, color: showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.4)', background: showCanvas ? 'rgba(0,255,204,0.06)' : 'transparent' }}
+        >▦ CANVAS</button>
+      </div>
+
+      <MessageStream
+        messages={messages}
+        streamingText={streamingText}
+        isGenerating={isGenerating && (!streamingConversationId || streamingConversationId === activeConversationId)}
+      />
+      <CanvasOutput output={output} visible={showCanvas} />
+
       <textarea
         ref={textareaRef}
         className="w-full rounded px-3 py-2 text-sm resize-none"
-        rows={4}
+        rows={3}
         value={prompt}
         onChange={e => onPromptChange(e.target.value)}
-        placeholder="Type your prompt..."
+        placeholder="Type your message..."
         onKeyDown={e => {
           if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !isGenerating) handleRun();
         }}
@@ -112,7 +182,7 @@ export default function ChatPanel({
             onClick={handleRun}
             data-desc="Run Generation"
           >
-            <Play size={14} /> RUN <span className="text-xs opacity-50">(Ctrl+Enter)</span>
+            <Play size={14} /> SEND <span className="text-xs opacity-50">(Ctrl+Enter)</span>
           </button>
         ) : (
           <button
@@ -173,18 +243,6 @@ export default function ChatPanel({
           </div>
         </div>
       )}
-
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between">
-          <span className="text-xs tracking-widest uppercase neon-text">OUTPUT</span>
-          <button
-            onClick={() => setShowCanvas(v => !v)}
-            style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.6rem', letterSpacing: '2px', padding: '2px 9px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, color: showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.4)', background: showCanvas ? 'rgba(0,255,204,0.06)' : 'transparent' }}
-          >▦ CANVAS</button>
-        </div>
-        <OutputViewer output={output} />
-        <CanvasOutput output={output} visible={showCanvas} />
-      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {[

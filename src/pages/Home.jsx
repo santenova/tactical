@@ -25,6 +25,10 @@ import { OLLAMA_PROXY_URL, resolveLocalEndpoints } from '@/lib/localProxies';
 import { loadEsEndpoints } from '@/lib/esEndpoints';
 import { fetchOrbComment } from '@/lib/orbComment';
 import { createAIRequest, abortAllAI } from '@/lib/aiAbort';
+import {
+  ensureConversation, addMessage, answerMessage, conversationMessages,
+  historyFor, removeConversation,
+} from '@/lib/conversations';
 
 export const STATE = { idle: 0, listening: 1, thinking: 2, speaking: 3, crisis: 4 };
 
@@ -49,6 +53,8 @@ export function matchesCrisis(text) {
 
 export const DEFAULT_ORB_SETTINGS = {
   listeningEnabled: true,
+  // Cross-feeds voice and chat: speech fills the chat field and runs it, and the orb comments on answers
+  chatOrbLink: true,
   recognitionLang: 'en-US',
   speechRate: 1.0,
   speechPitch: 1.0,
@@ -99,6 +105,11 @@ export default function Home() {
   const [transcriptLog, setTranscriptLog] = useLocalStorage('tactical_transcript_log', []);
   const [longTermMemory, setLongTermMemory] = useLocalStorage('tactical_ltm', []);
   const [sheetId, setSheetId] = useLocalStorage('tactical_sheet_id', '');
+  // Chat is a set of saved conversations; the active one holds its transcript
+  const [conversations, setConversations] = useLocalStorage('tactical_conversations', []);
+  const [activeConversationId, setActiveConversationId] = useLocalStorage('tactical_conversation_id', '');
+  const [streamingText, setStreamingText] = useState('');
+  const [streamingConvId, setStreamingConvId] = useState('');
 
   // Apply saved voice config to speech params
   useEffect(() => {
@@ -120,9 +131,12 @@ export default function Home() {
     if (!persona) return;
     setActivePersonaId(id);
     systemPromptRef.current = persona.systemPrompt;
-    // Apply orb settings
-    const merged = { ...DEFAULT_ORB_SETTINGS, ...persona.orbSettings };
-    setOrbSettings(merged);
+    // Apply orb settings — keep the user's chat ↔ orb link choice across persona switches
+    setOrbSettings(prev => ({
+      ...DEFAULT_ORB_SETTINGS,
+      ...persona.orbSettings,
+      chatOrbLink: (prev ?? DEFAULT_ORB_SETTINGS).chatOrbLink,
+    }));
     // Apply theme
     if (persona.themeKey && !custom) { setActiveTheme(persona.themeKey); applyTheme(persona.themeKey); localStorage.setItem('tactical_app_theme', persona.themeKey); }
     // Speak greeting
@@ -193,6 +207,13 @@ export default function Home() {
   const speechRateRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).speechRate);
   const speechPitchRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).speechPitch);
   const recognitionLangRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).recognitionLang);
+  const chatOrbLinkRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).chatOrbLink !== false);
+  const promptRef = useRef(prompt);
+  const speechDraftRef = useRef('');
+  const isGeneratingRef = useRef(false);
+  const orbCommentSeqRef = useRef(0);
+  const conversationsRef = useRef(conversations);
+  const activeConvIdRef = useRef(activeConversationId);
 
   useEffect(() => { orbModeRef.current = orbMode; }, [orbMode]);
   useEffect(() => { voiceEnabledRef.current = voiceEnabled; }, [voiceEnabled]);
@@ -203,6 +224,11 @@ export default function Home() {
   useEffect(() => { speechRateRef.current = safeSettings.speechRate; }, [safeSettings.speechRate]);
   useEffect(() => { speechPitchRef.current = safeSettings.speechPitch; }, [safeSettings.speechPitch]);
   useEffect(() => { recognitionLangRef.current = safeSettings.recognitionLang; }, [safeSettings.recognitionLang]);
+  useEffect(() => { chatOrbLinkRef.current = safeSettings.chatOrbLink !== false; }, [safeSettings.chatOrbLink]);
+  useEffect(() => { promptRef.current = prompt; }, [prompt]);
+  useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating]);
+  useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
+  useEffect(() => { activeConvIdRef.current = activeConversationId; }, [activeConversationId]);
 
   // Toggle listening on/off
   useEffect(() => {
@@ -314,21 +340,26 @@ export default function Home() {
   }, [endpoint]);
 
   // The orb remarks on a finished text-chat answer in one short spoken line
-  const speakOrbComment = useCallback(async (promptText, resultText) => {
+  const speakOrbComment = useCallback(async (promptText) => {
+    if (!chatOrbLinkRef.current) return;
+    // Only the newest comment may speak — a stale one from an earlier run stays quiet
+    const seq = ++orbCommentSeqRef.current;
     const aiReq = createAIRequest();
     try {
       const comment = await fetchOrbComment({
         endpoint,
         model: selectedModel || CONFIG.defaultModel,
         prompt: promptText,
-        result: resultText,
         persona: systemPromptRef.current,
         signal: aiReq.signal,
       });
+      if (seq !== orbCommentSeqRef.current || aiReq.signal.aborted) return;
       speakTextRef.current?.(comment || 'Response ready.');
     } catch {
       // A cancelled comment stays silent
-      if (!aiReq.signal.aborted) speakTextRef.current?.('Response ready.');
+      if (seq === orbCommentSeqRef.current && !aiReq.signal.aborted && chatOrbLinkRef.current) {
+        speakTextRef.current?.('Response ready.');
+      }
     } finally {
       aiReq.release();
     }
@@ -351,6 +382,15 @@ export default function Home() {
     setOutput('');
     setStatusIndicator('warning');
     setStats({ model: '-', time: '-', tokens: '-', throughput: '-' });
+    // The message joins its thread, which becomes the active conversation
+    const { list: threaded, id: convId } = ensureConversation(conversationsRef.current, activeConvIdRef.current, userMessage);
+    const priorMessages = historyFor(conversationMessages(threaded, convId));
+    const sentAt = Date.now();
+    activeConvIdRef.current = convId;
+    setConversations(addMessage(threaded, convId, { id: `u${sentAt}`, role: 'user', content: userMessage, ts: sentAt }));
+    setActiveConversationId(convId);
+    setStreamingText('');
+    setStreamingConvId(convId);
     const startTime = Date.now();
     let text = '';
     try {
@@ -362,22 +402,31 @@ export default function Home() {
       const res = await fetch(`${endpoint}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selectedModel, messages: [{ role: 'system', content: systemContent }, { role: 'user', content: userMessage }], stream: true }),
+        body: JSON.stringify({ model: selectedModel, messages: [{ role: 'system', content: systemContent }, ...priorMessages, { role: 'user', content: userMessage }], stream: true }),
         signal: aiReq.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await processSSEStream(res, (delta) => { text += delta; setOutput(text); }, (totalTokens) => {
+      await processSSEStream(res, (delta) => { text += delta; setOutput(text); setStreamingText(text); }, (totalTokens) => {
         const dur = (Date.now() - startTime) / 1000;
         const toks = totalTokens || text.split(/\s+/).length;
         setStats({ model: selectedModel, time: `${dur.toFixed(2)}s`, tokens: toks, throughput: Math.round(toks / dur) });
         setStatusIndicator('success');
         saveResponseToES(userMessage, text, selectedModel);
         saveResponseToSheet(userMessage, text, selectedModel, toks, `${dur.toFixed(2)}s`);
-        speakOrbComment(userMessage, text);
+        setConversations(list => addMessage(list, convId, answerMessage(text, {
+          model: selectedModel, time: `${dur.toFixed(2)}s`, tokens: toks, throughput: Math.round(toks / dur),
+        })));
+        setStreamingText('');
+        setStreamingConvId('');
+        speakOrbComment(userMessage);
       });
       return text;
     } catch (e) {
       setStatusIndicator(e.name === 'AbortError' ? 'warning' : 'error');
+      // Keep whatever arrived before the stop, flagged in the transcript
+      if (text) setConversations(list => addMessage(list, convId, answerMessage(text, null, { stopped: true })));
+      setStreamingText('');
+      setStreamingConvId('');
       // No comment when the run was cancelled — just hand the orb back to listening
       setOrbMode(listeningEnabledRef.current ? STATE.listening : STATE.idle);
       setStatusText(listeningEnabledRef.current ? 'LISTENING...' : 'STANDBY');
@@ -387,6 +436,11 @@ export default function Home() {
       aiReq.release();
       setIsGenerating(false);
       abortRef.current = null;
+      // Nobody speaks a comment with the link off, so hand the orb back here
+      if (!chatOrbLinkRef.current) {
+        setOrbMode(listeningEnabledRef.current ? STATE.listening : STATE.idle);
+        setStatusText(listeningEnabledRef.current ? 'LISTENING...' : 'STANDBY');
+      }
     }
   }, [endpoint, selectedModel, prompt, speakOrbComment]);
 
@@ -395,6 +449,7 @@ export default function Home() {
   // Aborts every in-flight OpenAI-conform request, stops speech and hands the orb back
   const cancelAll = useCallback(() => {
     abortAllAI();
+    orbCommentSeqRef.current++;
     clearTimeout(silenceTimerRef.current);
     synthRef.current?.cancel();
     try { recognitionRef.current?.stop(); } catch {}
@@ -407,6 +462,31 @@ export default function Home() {
       setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 100);
     }
   }, []);
+
+  // ─── CONVERSATION HISTORY ───────────────────────────────────────────────────
+  const selectConversation = useCallback((id) => {
+    const conv = conversationsRef.current.find(c => c.id === id);
+    activeConvIdRef.current = id || '';
+    setActiveConversationId(id || '');
+    const lastAnswer = [...(conv?.messages || [])].reverse().find(m => m.role === 'assistant' && m.content);
+    setOutput(lastAnswer?.content || '');
+  }, [setActiveConversationId, setOutput]);
+
+  const newConversation = useCallback(() => {
+    activeConvIdRef.current = '';
+    setActiveConversationId('');
+    setPrompt('');
+    setOutput('');
+  }, [setActiveConversationId, setPrompt, setOutput]);
+
+  const deleteConversation = useCallback(() => {
+    const id = activeConvIdRef.current;
+    if (!id) return;
+    setConversations(list => removeConversation(list, id));
+    activeConvIdRef.current = '';
+    setActiveConversationId('');
+    setOutput('');
+  }, [setActiveConversationId, setConversations, setOutput]);
 
   const pullModel = useCallback(async (name) => {
     if (!name.trim()) return;
@@ -553,12 +633,18 @@ export default function Home() {
   // and the orb only adds a short comment once the answer is finished.
   const processUserSpeech = useCallback(async (text) => {
     const spoken = (text || '').trim();
+    currentTranscriptRef.current = '';
     if (!spoken) {
       setOrbMode(STATE.listening);
       try { recognitionRef.current?.start(); } catch {}
       return;
     }
-    setPrompt(spoken);
+    // Link off: the orb hears you but never drives the chat
+    if (!chatOrbLinkRef.current) return;
+    if (promptRef.current.trim() === '' || promptRef.current === speechDraftRef.current) {
+      speechDraftRef.current = spoken;
+      setPrompt(spoken);
+    }
     if (matchesCrisis(spoken)) {
       setOrbMode(STATE.crisis);
       document.documentElement.style.setProperty('--iris-primary', '#ff0000');
@@ -585,15 +671,24 @@ export default function Home() {
       }
     };
     rec.onresult = (event) => {
+      // Never transcribe the orb's own voice, nor listen while an answer is already running
+      if (orbModeRef.current === STATE.speaking || isGeneratingRef.current) return;
       clearTimeout(silenceTimerRef.current);
       const lastResult = event.results[event.results.length - 1];
-      currentTranscriptRef.current = lastResult[0].transcript;
-      setTranscript(`"${currentTranscriptRef.current}"`);
-      // The orb reads what it hears straight into the chat input field
-      setPrompt(currentTranscriptRef.current);
+      const heard = (lastResult[0].transcript || '').trim();
+      if (!heard) return;
+      currentTranscriptRef.current = heard;
+      setTranscript(`"${heard}"`);
+      // Link off: the orb only shows what it hears, the chat stays untouched
+      if (!chatOrbLinkRef.current) return;
+      // Fill the chat field only when it is empty or already holds a spoken draft
+      if (promptRef.current.trim() === '' || promptRef.current === speechDraftRef.current) {
+        speechDraftRef.current = heard;
+        setPrompt(heard);
+      }
       silenceTimerRef.current = setTimeout(() => {
         rec.stop();
-        processUserSpeech(currentTranscriptRef.current);
+        processUserSpeech(heard);
       }, CONFIG.silenceThreshold);
     };
     rec.onend = () => {
@@ -692,6 +787,7 @@ export default function Home() {
     if (selectedModel) localStorage.setItem('tactical_app_model', selectedModel);
   }, [selectedModel]);
 
+  const activeMessages = conversations.find(c => c.id === activeConversationId)?.messages || [];
   const mergedOrbSettings = { ...DEFAULT_ORB_SETTINGS, ...safeSettings };
 
   return (
@@ -820,6 +916,14 @@ export default function Home() {
                   prompt={prompt}
                   onPromptChange={setPrompt}
                   output={output}
+                  messages={activeMessages}
+                  streamingText={streamingText}
+                  streamingConversationId={streamingConvId}
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelectConversation={selectConversation}
+                  onNewConversation={newConversation}
+                  onDeleteConversation={deleteConversation}
                   onRun={runGeneration}
                   onCancel={cancelGeneration}
                   onCancelAll={cancelAll}

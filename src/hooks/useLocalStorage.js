@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 
 export function useLocalStorage(key, initialValue) {
   const [storedValue, setStoredValue] = useState(() => {
@@ -10,13 +10,18 @@ export function useLocalStorage(key, initialValue) {
     }
   });
 
-  const setValue = (value) => {
-    const valueToStore = typeof value === 'function' ? value(storedValue) : value;
+  // Function updaters read the newest value, even from a callback created in an older render
+  const valueRef = useRef(storedValue);
+  valueRef.current = storedValue;
+
+  const setValue = useCallback((value) => {
+    const valueToStore = typeof value === 'function' ? value(valueRef.current) : value;
+    valueRef.current = valueToStore;
     setStoredValue(valueToStore);
     try {
       localStorage.setItem(key, JSON.stringify(valueToStore));
     } catch {}
-  };
+  }, [key]);
 
   return [storedValue, setValue];
 }
