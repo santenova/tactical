@@ -7,7 +7,7 @@ import SchedulerPanel from './SchedulerPanel';
 import CorePresets from './CorePresets';
 import CoreRefiner from './CoreRefiner';
 import PersonalCores from './PersonalCores';
-import { base44 } from '@/api/base44Client';
+import { client } from '@/apis/client';
 import { loadEsEndpoints, ES_ACTIVE_LS_KEY, saveActiveEsEndpoint } from '@/lib/esEndpoints';
 import { OLLAMA_PROXY_URL, normalizeOllamaUrl } from '@/lib/localProxies';
 
@@ -71,7 +71,7 @@ export default function CorePanel({ aiEndpoint, aiModel }) {
 
   useEffect(() => { saveState(state); }, [state]);
   // Personal cores are stored per user, so the refiner needs the signed-in id
-  useEffect(() => { base44.auth.me().then(u => setUserId(u?.id || '')).catch(() => {}); }, []);
+  useEffect(() => { client.auth.me().then(u => setUserId(u?.id || '')).catch(() => {}); }, []);
   useEffect(() => { saveCoreUI({ activeBL, view }); }, [activeBL, view]);
   useEffect(() => { saveActiveEsEndpoint(activeES); }, [activeES]);
   useEffect(() => {
