@@ -259,11 +259,6 @@ Core mappings: `query` (keyword), `title`/`snippet` (text), `url` (keyword), `sc
 
 ---
 
-## Backend
-
-`base44/functions/logToSheet/entry.ts` — invoked from the AI tab when a Sheet ID is set. Uses the authorized Google Sheets connector to append `datetime, model, prompt, response, tokens, time taken` to `Sheet1!A:F`. Returns `{ success, updatedRange }` or an error with the provider status.
-
-Authentication, hosting and the Google Sheets OAuth connection are provided by Base44 — no server code is required for them.
 
 ## Conventions
 
