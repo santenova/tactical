@@ -1,6 +1,6 @@
 # Tactical
 
-A modular, local-first AI console built on React + Vite and the Base44 platform. It combines three things in one interface:
+A modular, local-first AI console built on React + Vite. It combines three things in one interface:
 
 - **AI chat** — streaming completions from a local Ollama runtime, with a spoken voice orb, personas and mission context.
 - **Tactical dashboard** — inspection and management of the Elasticsearch cluster that stores everything the app knows.
@@ -98,12 +98,9 @@ src/
   components/ui/           shadcn/ui primitives
   lib/                     endpoint resolution, presets, graph maths, theme + auth helpers
   hooks/                   useLocalStorage, use-mobile
-base44/
-  functions/logToSheet/    server function: appends a chat log row to Google Sheets
-  entities/User.jsonc      user entity customization
 ```
 
-State is intentionally lightweight: UI preferences, endpoint lists, queues and caches live in `localStorage`; documents live in Elasticsearch; users and auth come from Base44. There is no app database collection in the path of the AI features.
+State is intentionally lightweight: UI preferences, endpoint lists, queues and caches live in `localStorage`; documents live in Elasticsearch; There is no app database collection in the path of the AI features.
 
 ### Routes
 
