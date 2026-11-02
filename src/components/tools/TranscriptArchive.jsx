@@ -1,9 +1,30 @@
 import React, { useState, useMemo } from 'react';
-import { X, Archive, MessageSquare, User, Bot, ChevronRight, Trash2, RefreshCw } from 'lucide-react';
+import { X, Archive, MessageSquare, User, Bot, ChevronRight, Trash2, RefreshCw, Download } from 'lucide-react';
 
 export default function TranscriptArchive({ log = [], onReEngage, onClear, isOpen, onClose }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
+
+  const downloadJson = () => {
+    const payload = {
+      exported_at: new Date().toISOString(),
+      count: log.length,
+      transcript: log.map(entry => ({
+        id: entry.id,
+        timestamp: entry.timestamp,
+        datetime: new Date(entry.timestamp).toISOString(),
+        user: entry.user,
+        ai: entry.ai,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcript-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const stats = useMemo(() => ({
     totalChats: log.length,
@@ -72,18 +93,30 @@ export default function TranscriptArchive({ log = [], onReEngage, onClear, isOpe
         ))}
       </div>
 
-      {/* Search */}
-      <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(0,255,204,0.08)' }}>
+      {/* Search + export */}
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(0,255,204,0.08)', display: 'flex', gap: 8, alignItems: 'stretch' }}>
         <input
           type="text"
           placeholder="SEARCH ARCHIVE..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           style={{
-            width: '100%', padding: '7px 10px', borderRadius: 4,
+            flex: 1, minWidth: 0, padding: '7px 10px', borderRadius: 4,
             fontSize: '0.8rem', letterSpacing: '1px',
           }}
         />
+        <button
+          onClick={downloadJson}
+          disabled={log.length === 0}
+          title="Download transcript as JSON"
+          className="neon-btn"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+            padding: '7px 10px', borderRadius: 4, fontSize: '0.65rem', letterSpacing: '1.5px',
+          }}
+        >
+          <Download size={12} /> EXPORT JSON
+        </button>
       </div>
 
       {/* Entry List */}

@@ -91,7 +91,7 @@ export default function InteractionLogs() {
   useEffect(() => {
     search();
     loadModels();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [activeEp]);
 
   const selectEp = (i) => {

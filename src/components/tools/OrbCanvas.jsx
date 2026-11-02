@@ -1,7 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { STATE, DEFAULT_ORB_SETTINGS } from '../../pages/Home';
+import { ORB_FLAVORS } from '@/lib/orbFlavors';
 
-export default function OrbCanvas({ mode, statusText, transcript, orbSettings, onOrbClick, onFullscreen }) {
+export default function OrbCanvas({ mode, statusText, transcript, orbSettings, onOrbClick, onFullscreen, onSend, flavor, onFlavorChange }) {
+  const [draft, setDraft] = useState('');
   const canvasRef = useRef(null);
   const modeRef = useRef(mode);
   const timeRef = useRef(0);
@@ -123,6 +125,15 @@ export default function OrbCanvas({ mode, statusText, transcript, orbSettings, o
   }, []);
 
   const crisisColor = mode === STATE.crisis ? 'red' : 'var(--neon-primary)';
+  // Long typed answers read better left-aligned; short spoken lines stay centred
+  const longAnswer = (transcript || '').length > 90;
+
+  const submit = () => {
+    const text = draft.trim();
+    if (!text || !onSend) return;
+    onSend(text);
+    setDraft('');
+  };
 
   return (
     <div className="tactical-panel rounded p-3 flex flex-col gap-2 h-full">
@@ -138,9 +149,46 @@ export default function OrbCanvas({ mode, statusText, transcript, orbSettings, o
         title="Click to interrupt"
       />
 
-      <div className="text-center text-sm min-h-[2rem] px-2" style={{ color: 'rgba(255,255,255,0.85)', fontWeight: 300 }}>
+      <div
+        className="text-sm min-h-[2rem] max-h-56 overflow-y-auto px-2 whitespace-pre-wrap"
+        style={{ color: 'rgba(255,255,255,0.85)', fontWeight: 300, textAlign: longAnswer ? 'left' : 'center' }}
+      >
         {transcript}
       </div>
+
+      {onSend && (
+        <div className="flex gap-1">
+          <select
+            value={flavor || 'simplify'}
+            onChange={e => onFlavorChange?.(e.target.value)}
+            title="Prompt flavor for typed messages"
+            className="px-1 py-1 rounded text-xs flex-shrink-0"
+            style={{ width: 88, fontSize: '0.6rem', letterSpacing: '1px' }}
+            data-desc="Prompt Flavor"
+          >
+            {ORB_FLAVORS.map(f => (
+              <option key={f.id} value={f.id}>{f.label}</option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
+            placeholder="Message the orb..."
+            className="flex-1 min-w-0 px-2 py-1 rounded text-xs"
+            data-desc="Type a Message for the Orb"
+          />
+          <button
+            className="neon-btn px-2 py-1 rounded text-xs"
+            onClick={submit}
+            disabled={!draft.trim()}
+            data-desc="Send Message to Orb"
+          >
+            ▶
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center justify-between mt-auto">
         <div className="text-xs tracking-widest opacity-30">TACTICAL v2.0</div>

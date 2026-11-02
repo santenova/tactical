@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Brain, X, Trash2, Tag, Search, Pin } from 'lucide-react';
+import { Brain, X, Trash2, Search, Pin } from 'lucide-react';
 
 const STOP_WORDS = new Set([
   'the','a','an','is','it','in','on','at','to','for','of','and','or','but',

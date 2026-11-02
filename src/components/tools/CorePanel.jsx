@@ -10,6 +10,7 @@ import PersonalCores from './PersonalCores';
 import { client } from '@/apis/client';
 import { loadEsEndpoints, ES_ACTIVE_LS_KEY, saveActiveEsEndpoint } from '@/lib/esEndpoints';
 import { OLLAMA_PROXY_URL, normalizeOllamaUrl } from '@/lib/localProxies';
+import { safeSetItem } from '@/lib/safeStorage';
 
 const BL_LS_KEY = 'tactical_browserless_endpoints';
 const CORE_LS_KEY = 'tactical_knowledge_core_state';
@@ -18,7 +19,7 @@ const CORE_UI_KEY = 'tactical_core_ui';
 function loadCoreUI() {
   try { return JSON.parse(localStorage.getItem(CORE_UI_KEY)) || {}; } catch { return {}; }
 }
-function saveCoreUI(u) { localStorage.setItem(CORE_UI_KEY, JSON.stringify(u)); }
+function saveCoreUI(u) { safeSetItem(CORE_UI_KEY, JSON.stringify(u)); }
 export const INDEX_PREFIX = 'knowledge_core_';
 export function coreIndexName(name) {
   return INDEX_PREFIX + String(name).toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -43,7 +44,7 @@ function loadState() {
     return { activePersonal: '', coreName: 'default', queries: [], delay: 8, embeddingEnabled: false, embeddingUrl: OLLAMA_PROXY_URL, embeddingModel: 'nomic-embed-text', summaryModel: 'llama3:latest', queryExpansionEnabled: true };
   }
 }
-function saveState(s) { localStorage.setItem(CORE_LS_KEY, JSON.stringify(s)); }
+function saveState(s) { safeSetItem(CORE_LS_KEY, JSON.stringify(s)); }
 
 export default function CorePanel({ aiEndpoint, aiModel }) {
   const blEndpoints = loadBL();

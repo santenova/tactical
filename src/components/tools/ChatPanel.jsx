@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import CanvasOutput from './CanvasOutput';
-import { Play, Square, Trash2, Ban } from 'lucide-react';
+import { Play, Square, Trash2, Ban, Download } from 'lucide-react';
 import MissionBrief from './MissionBrief';
 import PromptLibrary from './PromptLibrary';
 import PromptHistory from './PromptHistory';
@@ -90,6 +90,29 @@ export default function ChatPanel({
     if (content) onPromptChange(content);
   };
 
+  const downloadTranscript = useCallback(() => {
+    if (messages.length === 0) return;
+    const payload = {
+      exported_at: new Date().toISOString(),
+      conversation_id: activeConversationId || null,
+      message_count: messages.length,
+      messages: messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        datetime: new Date(m.ts || Date.now()).toISOString(),
+        ...(m.meta ? { model: m.meta.model, tokens: m.meta.tokens } : {}),
+        ...(m.stopped ? { stopped: true } : {}),
+      })),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `conversation-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, activeConversationId]);
+
   return (
     <div className="tactical-panel rounded p-4 flex flex-col gap-3">
       {/* Conversation history */}
@@ -148,12 +171,23 @@ export default function ChatPanel({
         <PromptLibrary onInsert={onPromptChange} />
       </div>
 
-      <div className="flex items-center justify-between">
-        <span className="text-xs tracking-widest uppercase neon-text">TRANSCRIPT</span>
-        <button
-          onClick={() => setShowCanvas(v => !v)}
-          style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.6rem', letterSpacing: '2px', padding: '2px 9px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, color: showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.4)', background: showCanvas ? 'rgba(0,255,204,0.06)' : 'transparent' }}
-        >▦ CANVAS</button>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs tracking-widest uppercase neon-text">CONVERSATION TRANSCRIPT</span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={downloadTranscript}
+            disabled={messages.length === 0}
+            title="Download this conversation as JSON"
+            data-desc="Download Conversation JSON"
+            style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.6rem', letterSpacing: '2px', padding: '2px 9px', borderRadius: 3, cursor: messages.length === 0 ? 'not-allowed' : 'pointer', opacity: messages.length === 0 ? 0.4 : 1, display: 'flex', alignItems: 'center', gap: 4, border: '1px solid rgba(0,255,204,0.2)', color: 'rgba(0,255,204,0.7)', background: 'transparent' }}
+          >
+            <Download size={11} /> JSON
+          </button>
+          <button
+            onClick={() => setShowCanvas(v => !v)}
+            style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.6rem', letterSpacing: '2px', padding: '2px 9px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, color: showCanvas ? 'var(--neon-primary)' : 'rgba(0,255,204,0.4)', background: showCanvas ? 'rgba(0,255,204,0.06)' : 'transparent' }}
+          >▦ CANVAS</button>
+        </div>
       </div>
 
       <MessageStream

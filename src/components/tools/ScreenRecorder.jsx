@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 function CropModal({ video, onApply, onCancel }) {
   const cropRef = useRef(null);

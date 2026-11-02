@@ -1,4 +1,5 @@
 import { ELASTIC_PROXY_URL } from '@/lib/localProxies';
+import { safeSetItem } from '@/lib/safeStorage';
 
 export const ES_LS_KEY = 'tactical_es_endpoints';
 export const ES_ACTIVE_LS_KEY = 'tactical_es_active_ep';
@@ -24,11 +25,11 @@ export function loadEsEndpoints() {
 }
 
 export function saveEsEndpoints(eps) {
-  localStorage.setItem(ES_LS_KEY, JSON.stringify(eps));
+  safeSetItem(ES_LS_KEY, JSON.stringify(eps));
 }
 
 export function saveActiveEsEndpoint(index) {
-  localStorage.setItem(ES_ACTIVE_LS_KEY, String(index));
+  safeSetItem(ES_ACTIVE_LS_KEY, String(index));
 }
 
 // Put the endpoint the boot diagnostics actually reached first, without dropping any others.

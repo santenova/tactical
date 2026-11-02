@@ -8,7 +8,7 @@ import HoverCloud from '../components/tools/HoverCloud';
 import MediaRepository from '../components/tools/MediaRepository';
 import MainFeed from '../components/tools/MainFeed';
 import ScreenRecorder from '../components/tools/ScreenRecorder';
-import ThemeSwitcher, { applyTheme } from '../components/tools/ThemeSwitcher';
+import { applyTheme } from '../components/tools/ThemeSwitcher';
 import PersonaManager, { PERSONAS } from '../components/tools/PersonaManager';
 import OrbFullscreen from '../components/tools/OrbFullscreen';
 import PersonaBackground from '../components/tools/PersonaBackground';
@@ -20,11 +20,13 @@ import VoiceConfigPanel, { loadVoiceConfig } from '../components/tools/VoiceConf
 import MemoryInspector, { extractKeywords, scoreMemory } from '../components/tools/MemoryInspector';
 import Navbar from '../components/tools/Navbar';
 import { useLocalStorage } from '../hooks/useLocalStorage';
+import { safeSetItem } from '@/lib/safeStorage';
 import { client } from '@/apis/client';
 import { OLLAMA_PROXY_URL, resolveLocalEndpoints } from '@/lib/localProxies';
 import { loadEsEndpoints } from '@/lib/esEndpoints';
-import { fetchOrbComment } from '@/lib/orbComment';
 import { createAIRequest, abortAllAI } from '@/lib/aiAbort';
+import { sanitizeForSpeech } from '@/lib/speechText';
+import { wrapOrbPrompt } from '@/lib/orbFlavors';
 import {
   ensureConversation, addMessage, answerMessage, conversationMessages,
   historyFor, removeConversation,
@@ -53,8 +55,6 @@ export function matchesCrisis(text) {
 
 export const DEFAULT_ORB_SETTINGS = {
   listeningEnabled: true,
-  // Cross-feeds voice and chat: speech fills the chat field and runs it, and the orb comments on answers
-  chatOrbLink: true,
   recognitionLang: 'en-US',
   speechRate: 1.0,
   speechPitch: 1.0,
@@ -93,6 +93,7 @@ export default function Home() {
   const [shortcutToast, setShortcutToast] = useState({ visible: false, label: '' });
   const [missionBriefItems, setMissionBriefItems] = useLocalStorage('tactical_app_mission_brief', []);
   const [orbSettings, setOrbSettings] = useLocalStorage('tactical_app_orb_settings', DEFAULT_ORB_SETTINGS);
+  const [orbFlavor, setOrbFlavor] = useLocalStorage('tactical_orb_flavor', 'simplify');
 
   const updateOrbSetting = useCallback((key, val) => {
     setOrbSettings(prev => ({ ...DEFAULT_ORB_SETTINGS, ...prev, [key]: val }));
@@ -116,12 +117,26 @@ export default function Home() {
     const cfg = loadVoiceConfig();
     updateOrbSetting('speechPitch', cfg.pitch);
     updateOrbSetting('speechRate', cfg.rate);
+    silenceThresholdRef.current = cfg.silenceThreshold ?? CONFIG.silenceThreshold;
   }, []);
 
   const handleVoiceConfigChange = useCallback((cfg) => {
     updateOrbSetting('speechPitch', cfg.pitch);
     updateOrbSetting('speechRate', cfg.rate);
+    silenceThresholdRef.current = cfg.silenceThreshold ?? CONFIG.silenceThreshold;
   }, [updateOrbSetting]);
+
+  // Calibration takes the microphone — pause the orb listener while it runs
+  const handleCalibrationChange = useCallback((active) => {
+    calibratingRef.current = active;
+    if (active) {
+      synthRef.current?.cancel();
+      clearTimeout(silenceTimerRef.current);
+      try { recognitionRef.current?.stop(); } catch {}
+    } else if (listeningEnabledRef.current) {
+      setTimeout(() => { try { recognitionRef.current?.start(); } catch {} }, 200);
+    }
+  }, []);
   const [activeTheme, setActiveTheme] = useState(() => localStorage.getItem('tactical_app_theme') || 'tactical');
   const [activePersonaId, setActivePersonaId] = useLocalStorage('tactical_app_persona', 'tactical');
   const systemPromptRef = useRef(PERSONAS[localStorage.getItem('tactical_app_persona') || 'tactical']?.systemPrompt || CONFIG.systemPrompt);
@@ -131,14 +146,10 @@ export default function Home() {
     if (!persona) return;
     setActivePersonaId(id);
     systemPromptRef.current = persona.systemPrompt;
-    // Apply orb settings — keep the user's chat ↔ orb link choice across persona switches
-    setOrbSettings(prev => ({
-      ...DEFAULT_ORB_SETTINGS,
-      ...persona.orbSettings,
-      chatOrbLink: (prev ?? DEFAULT_ORB_SETTINGS).chatOrbLink,
-    }));
+    // Apply orb settings
+    setOrbSettings({ ...DEFAULT_ORB_SETTINGS, ...persona.orbSettings });
     // Apply theme
-    if (persona.themeKey && !custom) { setActiveTheme(persona.themeKey); applyTheme(persona.themeKey); localStorage.setItem('tactical_app_theme', persona.themeKey); }
+    if (persona.themeKey && !custom) { setActiveTheme(persona.themeKey); applyTheme(persona.themeKey); safeSetItem('tactical_app_theme', persona.themeKey); }
     // Speak greeting
     setTimeout(() => speakTextRef.current?.(persona.greeting || `${persona.name} persona activated.`), 300);
   }, [setOrbSettings, setActivePersonaId]);
@@ -146,7 +157,7 @@ export default function Home() {
   const handleThemeChange = useCallback((key) => {
     setActiveTheme(key);
     applyTheme(key);
-    localStorage.setItem('tactical_app_theme', key);
+    safeSetItem('tactical_app_theme', key);
   }, []);
 
   useEffect(() => { applyTheme(activeTheme); }, []);
@@ -197,6 +208,10 @@ export default function Home() {
   const synthRef = useRef(window.speechSynthesis);
   const speakTextRef = useRef(null);
   const silenceTimerRef = useRef(null);
+  // Set from the saved voice config (Voice settings → Pause threshold)
+  const silenceThresholdRef = useRef(CONFIG.silenceThreshold);
+  // True while the calibration popup owns the microphone
+  const calibratingRef = useRef(false);
   const currentTranscriptRef = useRef('');
   const orbModeRef = useRef(STATE.idle);
 
@@ -207,11 +222,6 @@ export default function Home() {
   const speechRateRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).speechRate);
   const speechPitchRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).speechPitch);
   const recognitionLangRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).recognitionLang);
-  const chatOrbLinkRef = useRef((orbSettings ?? DEFAULT_ORB_SETTINGS).chatOrbLink !== false);
-  const promptRef = useRef(prompt);
-  const speechDraftRef = useRef('');
-  const isGeneratingRef = useRef(false);
-  const orbCommentSeqRef = useRef(0);
   const conversationsRef = useRef(conversations);
   const activeConvIdRef = useRef(activeConversationId);
 
@@ -224,9 +234,6 @@ export default function Home() {
   useEffect(() => { speechRateRef.current = safeSettings.speechRate; }, [safeSettings.speechRate]);
   useEffect(() => { speechPitchRef.current = safeSettings.speechPitch; }, [safeSettings.speechPitch]);
   useEffect(() => { recognitionLangRef.current = safeSettings.recognitionLang; }, [safeSettings.recognitionLang]);
-  useEffect(() => { chatOrbLinkRef.current = safeSettings.chatOrbLink !== false; }, [safeSettings.chatOrbLink]);
-  useEffect(() => { promptRef.current = prompt; }, [prompt]);
-  useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating]);
   useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
   useEffect(() => { activeConvIdRef.current = activeConversationId; }, [activeConversationId]);
 
@@ -339,45 +346,13 @@ export default function Home() {
     }
   }, [endpoint]);
 
-  // The orb remarks on a finished text-chat answer in one short spoken line
-  const speakOrbComment = useCallback(async (promptText) => {
-    if (!chatOrbLinkRef.current) return;
-    // Only the newest comment may speak — a stale one from an earlier run stays quiet
-    const seq = ++orbCommentSeqRef.current;
-    const aiReq = createAIRequest();
-    try {
-      const comment = await fetchOrbComment({
-        endpoint,
-        model: selectedModel || CONFIG.defaultModel,
-        prompt: promptText,
-        persona: systemPromptRef.current,
-        signal: aiReq.signal,
-      });
-      if (seq !== orbCommentSeqRef.current || aiReq.signal.aborted) return;
-      speakTextRef.current?.(comment || 'Response ready.');
-    } catch {
-      // A cancelled comment stays silent
-      if (seq === orbCommentSeqRef.current && !aiReq.signal.aborted && chatOrbLinkRef.current) {
-        speakTextRef.current?.('Response ready.');
-      }
-    } finally {
-      aiReq.release();
-    }
-  }, [endpoint, selectedModel]);
-
   const runGeneration = useCallback(async (messageOverride) => {
-    // Typed in the chat field or spoken through the orb — the chat field text is what runs
+    // Text chat runs on its own — it never touches the orb
     const userMessage = (typeof messageOverride === 'string' ? messageOverride : prompt).trim();
     if (!userMessage || !selectedModel) return null;
     if (abortRef.current) abortRef.current.abort();
     const aiReq = createAIRequest();
     abortRef.current = aiReq.controller;
-    // The listening orb takes the message: it hears it, stays silent on it
-    clearTimeout(silenceTimerRef.current);
-    try { recognitionRef.current?.stop(); } catch {}
-    setTranscript(`"${userMessage}"`);
-    setOrbMode(STATE.thinking);
-    setStatusText('PROCESSING...');
     setIsGenerating(true);
     setOutput('');
     setStatusIndicator('warning');
@@ -418,7 +393,6 @@ export default function Home() {
         })));
         setStreamingText('');
         setStreamingConvId('');
-        speakOrbComment(userMessage);
       });
       return text;
     } catch (e) {
@@ -427,29 +401,19 @@ export default function Home() {
       if (text) setConversations(list => addMessage(list, convId, answerMessage(text, null, { stopped: true })));
       setStreamingText('');
       setStreamingConvId('');
-      // No comment when the run was cancelled — just hand the orb back to listening
-      setOrbMode(listeningEnabledRef.current ? STATE.listening : STATE.idle);
-      setStatusText(listeningEnabledRef.current ? 'LISTENING...' : 'STANDBY');
-      if (listeningEnabledRef.current) { try { recognitionRef.current?.start(); } catch {} }
       return null;
     } finally {
       aiReq.release();
       setIsGenerating(false);
       abortRef.current = null;
-      // Nobody speaks a comment with the link off, so hand the orb back here
-      if (!chatOrbLinkRef.current) {
-        setOrbMode(listeningEnabledRef.current ? STATE.listening : STATE.idle);
-        setStatusText(listeningEnabledRef.current ? 'LISTENING...' : 'STANDBY');
-      }
     }
-  }, [endpoint, selectedModel, prompt, speakOrbComment]);
+  }, [endpoint, selectedModel, prompt]);
 
   const cancelGeneration = () => { if (abortRef.current) abortRef.current.abort(); };
 
   // Aborts every in-flight OpenAI-conform request, stops speech and hands the orb back
   const cancelAll = useCallback(() => {
     abortAllAI();
-    orbCommentSeqRef.current++;
     clearTimeout(silenceTimerRef.current);
     synthRef.current?.cancel();
     try { recognitionRef.current?.stop(); } catch {}
@@ -532,6 +496,20 @@ export default function Home() {
   // ─── VOICE / BRAIN ──────────────────────────────────────────────────────────
   const updateStatus = (text) => setStatusText(text);
 
+  // Long replies are split at sentence boundaries so the speech engine reads every
+  // sentence instead of cutting off partway through one oversized utterance
+  const splitForSpeech = (text) => {
+    const sentences = String(text).replace(/\s+/g, ' ').trim().match(/[^.!?]+[.!?]*\s*/g) || [String(text)];
+    const chunks = [];
+    let buf = '';
+    for (const s of sentences) {
+      if (buf && (buf + s).length > 220) { chunks.push(buf.trim()); buf = s; }
+      else buf += s;
+    }
+    if (buf.trim()) chunks.push(buf.trim());
+    return chunks.length > 0 ? chunks : [String(text)];
+  };
+
   const speakText = useCallback((text) => {
     const synth = synthRef.current;
     if (!synth) return;
@@ -546,17 +524,14 @@ export default function Home() {
     }
     synth.cancel();
     setOrbMode(STATE.speaking);
+    orbModeRef.current = STATE.speaking;
     updateStatus('RESPONDING...');
-    const utter = new SpeechSynthesisUtterance(text);
     const voices = synth.getVoices();
     const voice =
       voices.find(v => v.name.includes('Google UK English Female')) ||
       voices.find(v => v.lang === 'en-GB' && v.name.includes('Female')) ||
       voices.find(v => v.lang === 'en-GB');
-    if (voice) utter.voice = voice;
-    utter.pitch = speechPitchRef.current;
-    utter.rate = speechRateRef.current;
-    utter.onend = () => {
+    const finish = () => {
       setOrbMode(STATE.listening);
       updateStatus('LISTENING...');
       document.documentElement.style.setProperty('--iris-primary', '#00ffcc');
@@ -568,12 +543,32 @@ export default function Home() {
         updateStatus('STANDBY');
       }
     };
-    synth.speak(utter);
+    // Markdown, symbols and emoji are stripped so the voice never reads them aloud
+    const spokenText = sanitizeForSpeech(text);
+    if (!spokenText) {
+      setTranscript(text);
+      finish();
+      return;
+    }
+    const chunks = splitForSpeech(spokenText);
+    let index = 0;
+    const speakNext = () => {
+      // An interrupt hands the orb back to listening — stop the remaining chunks
+      if (index >= chunks.length || orbModeRef.current !== STATE.speaking) { finish(); return; }
+      const utter = new SpeechSynthesisUtterance(chunks[index++]);
+      if (voice) utter.voice = voice;
+      utter.pitch = speechPitchRef.current;
+      utter.rate = speechRateRef.current;
+      utter.onend = speakNext;
+      utter.onerror = speakNext;
+      synth.speak(utter);
+    };
+    speakNext();
     setTranscript(text);
   }, []);
   speakTextRef.current = speakText;
 
-  const queryBrain = useCallback(async (userInput) => {
+  const queryBrain = useCallback(async (userInput, opts = {}) => {
     if (matchesCrisis(userInput)) {
       setOrbMode(STATE.crisis);
       document.documentElement.style.setProperty('--iris-primary', '#ff0000');
@@ -582,8 +577,11 @@ export default function Home() {
     setOrbMode(STATE.thinking);
     updateStatus('PROCESSING...');
 
+    // Memory and logs always keep what was actually said — only the model call may be wrapped
+    const displayPrompt = opts.originalText || userInput;
+
     // Long-term memory retrieval
-    const inputKws = extractKeywords(userInput);
+    const inputKws = extractKeywords(displayPrompt);
     const relevant = longTermMemory
       .filter(m => scoreMemory(m, inputKws) >= 2)
       .sort((a, b) => scoreMemory(b, inputKws) - scoreMemory(a, inputKws))
@@ -596,7 +594,11 @@ export default function Home() {
     const missionContext = pinnedFacts.length > 0
       ? `\n\n=== MISSION BRIEF (prioritize these facts in every response) ===\n${pinnedFacts.map(f => `[${f.category}] ${f.title}: ${f.content}`).join('\n')}\n===`
       : '';
-    const enrichedSystemPrompt = systemPromptRef.current + missionContext + memContext;
+    // Typed questions get a full-length answer; only spoken turns are kept short for voice
+    const lengthBrief = opts.detailed
+      ? '\n\nIMPORTANT: this reply is typed, not spoken. Give a complete, full-length answer: explain thoroughly, use paragraphs or lists where helpful, and ignore any brevity or sentence limit above.'
+      : '';
+    const enrichedSystemPrompt = systemPromptRef.current + missionContext + memContext + lengthBrief;
 
     const messages = [
       { role: 'system', content: enrichedSystemPrompt },
@@ -614,12 +616,12 @@ export default function Home() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content || '';
-      memoryRef.current.push({ user: userInput, ai: reply });
-      saveResponseToES(userInput, reply, selectedModel || CONFIG.defaultModel);
-      saveResponseToSheet(userInput, reply, selectedModel || CONFIG.defaultModel);
+      memoryRef.current.push({ user: displayPrompt, ai: reply });
+      saveResponseToES(displayPrompt, reply, selectedModel || CONFIG.defaultModel);
+      saveResponseToSheet(displayPrompt, reply, selectedModel || CONFIG.defaultModel);
       // Save to long-term memory
-      const keywords = [...new Set([...extractKeywords(userInput), ...extractKeywords(reply)])];
-      setLongTermMemory(prev => [...prev.slice(-199), { id: Date.now(), user: userInput, ai: reply, keywords, timestamp: Date.now(), tags: [], pinned: false }]);
+      const keywords = [...new Set([...extractKeywords(displayPrompt), ...extractKeywords(reply)])];
+      setLongTermMemory(prev => [...prev.slice(-199), { id: Date.now(), user: displayPrompt, ai: reply, keywords, timestamp: Date.now(), tags: [], pinned: false }]);
       if (memoryRef.current.length > 5) memoryRef.current.shift();
       return reply;
     } catch {
@@ -629,9 +631,8 @@ export default function Home() {
     }
   }, [endpoint, selectedModel]);
 
-  // Spoken input lands in the chat field, runs through the chat pipeline,
-  // and the orb only adds a short comment once the answer is finished.
-  const processUserSpeech = useCallback(async (text) => {
+  // The orb runs its own spoken turn — entirely separate from the text chat
+  const processUserSpeech = useCallback(async (text, opts = {}) => {
     const spoken = (text || '').trim();
     currentTranscriptRef.current = '';
     if (!spoken) {
@@ -639,23 +640,41 @@ export default function Home() {
       try { recognitionRef.current?.start(); } catch {}
       return;
     }
-    // Link off: the orb hears you but never drives the chat
-    if (!chatOrbLinkRef.current) return;
-    if (promptRef.current.trim() === '' || promptRef.current === speechDraftRef.current) {
-      speechDraftRef.current = spoken;
-      setPrompt(spoken);
-    }
     if (matchesCrisis(spoken)) {
       setOrbMode(STATE.crisis);
       document.documentElement.style.setProperty('--iris-primary', '#ff0000');
       speakText(CONFIG.crisisResponse);
       return;
     }
-    const answer = await runGeneration(spoken);
+    // Typed text is wrapped into a simplify-and-summarise request before it is answered
+    const question = opts.wrap ? opts.wrap(spoken) : spoken;
+    const answer = await queryBrain(question, { ...opts, originalText: spoken });
     if (answer) {
       setTranscriptLog(prev => [...prev, { id: Date.now(), user: spoken, ai: answer, timestamp: Date.now() }]);
+      speakText(answer);
     }
-  }, [runGeneration, setPrompt, setTranscriptLog, speakText]);
+    return answer;
+  }, [queryBrain, setTranscriptLog, speakText]);
+
+  // Typed input goes straight to the orb's own turn — the text chat stays out of it
+  const sendOrbMessage = useCallback(async (text) => {
+    const message = (text || '').trim();
+    if (!message) return;
+    setTranscript(`"${message}"`);
+    // Only text-box messages are wrapped — voice turns are sent exactly as heard.
+    // The flavor picked in the orb selects which prompt template wraps them.
+    const answer = await processUserSpeech(message, {
+      detailed: true,
+      wrap: (m) => wrapOrbPrompt(orbFlavor, m),
+    });
+    // Only the orb's answer joins the conversation transcript, not the typed question
+    if (answer) {
+      const { list: threaded, id: convId } = ensureConversation(conversationsRef.current, activeConvIdRef.current, message);
+      activeConvIdRef.current = convId;
+      setConversations(addMessage(threaded, convId, answerMessage(answer, { model: selectedModel })));
+      setActiveConversationId(convId);
+    }
+  }, [processUserSpeech, orbFlavor, selectedModel, setActiveConversationId, setConversations]);
 
   const setupSpeechRecognition = useCallback(() => {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -671,33 +690,26 @@ export default function Home() {
       }
     };
     rec.onresult = (event) => {
-      // Never transcribe the orb's own voice, nor listen while an answer is already running
-      if (orbModeRef.current === STATE.speaking || isGeneratingRef.current) return;
+      // Never transcribe the orb's own voice
+      if (orbModeRef.current === STATE.speaking) return;
       clearTimeout(silenceTimerRef.current);
       const lastResult = event.results[event.results.length - 1];
       const heard = (lastResult[0].transcript || '').trim();
       if (!heard) return;
       currentTranscriptRef.current = heard;
       setTranscript(`"${heard}"`);
-      // Link off: the orb only shows what it hears, the chat stays untouched
-      if (!chatOrbLinkRef.current) return;
-      // Fill the chat field only when it is empty or already holds a spoken draft
-      if (promptRef.current.trim() === '' || promptRef.current === speechDraftRef.current) {
-        speechDraftRef.current = heard;
-        setPrompt(heard);
-      }
       silenceTimerRef.current = setTimeout(() => {
         rec.stop();
         processUserSpeech(heard);
-      }, CONFIG.silenceThreshold);
+      }, silenceThresholdRef.current);
     };
     rec.onend = () => {
-      if (orbModeRef.current === STATE.listening && listeningEnabledRef.current) {
+      if (orbModeRef.current === STATE.listening && listeningEnabledRef.current && !calibratingRef.current) {
         try { rec.start(); } catch {}
       }
     };
     recognitionRef.current = rec;
-  }, [processUserSpeech, setPrompt]);
+  }, [processUserSpeech]);
 
   // ─── MEDIA ───────────────────────────────────────────────────────────────────
   const handleImportFiles = useCallback(async (e) => {
@@ -784,7 +796,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (selectedModel) localStorage.setItem('tactical_app_model', selectedModel);
+    if (selectedModel) safeSetItem('tactical_app_model', selectedModel);
   }, [selectedModel]);
 
   const activeMessages = conversations.find(c => c.id === activeConversationId)?.messages || [];
@@ -852,6 +864,7 @@ export default function Home() {
         isOpen={voiceOpen}
         onClose={() => setVoiceOpen(false)}
         onConfigChange={handleVoiceConfigChange}
+        onCalibrationChange={handleCalibrationChange}
       />
 
       <MemoryInspector
@@ -873,6 +886,9 @@ export default function Home() {
                   transcript={transcript}
                   orbSettings={mergedOrbSettings}
                   onFullscreen={() => setOrbFullscreen(true)}
+                  onSend={sendOrbMessage}
+                  flavor={orbFlavor}
+                  onFlavorChange={setOrbFlavor}
                   onOrbClick={() => {
                     if (orbMode === STATE.speaking) {
                       synthRef.current?.cancel();

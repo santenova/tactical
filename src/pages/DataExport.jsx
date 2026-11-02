@@ -89,7 +89,7 @@ export default function DataExport() {
 
   useEffect(() => {
     loadIndices();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [activeEp]);
 
   const selectEp = (i) => {

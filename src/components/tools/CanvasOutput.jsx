@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { BarChart2, TrendingUp, Circle, Cpu } from 'lucide-react';
+import { BarChart2 } from 'lucide-react';
 
 const MODES = ['BAR', 'LINE', 'NODES', 'SCATTER'];
 

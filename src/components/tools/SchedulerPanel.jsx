@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Square, Clock, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { Play, Square, Clock, Plus, Trash2 } from 'lucide-react';
+import { safeSetItem } from '@/lib/safeStorage';
 
 const SCHED_LS_KEY = 'tactical_core_schedules';
 
 function loadSchedules() {
   try { return JSON.parse(localStorage.getItem(SCHED_LS_KEY)) || []; } catch { return []; }
 }
-function saveSchedules(s) { localStorage.setItem(SCHED_LS_KEY, JSON.stringify(s)); }
+function saveSchedules(s) { safeSetItem(SCHED_LS_KEY, JSON.stringify(s)); }
 
 const INTERVAL_OPTIONS = [
   { label: '15 min', ms: 15 * 60 * 1000 },

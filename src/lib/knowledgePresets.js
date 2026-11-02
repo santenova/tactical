@@ -1,3 +1,5 @@
+import { safeSetItem } from '@/lib/safeStorage';
+
 export const PRESET_LS_KEY = 'tactical_core_presets';
 
 export const PRESET_COLORS = [
@@ -42,7 +44,7 @@ export function loadPresets() {
 }
 
 export function savePresets(presets) {
-  localStorage.setItem(PRESET_LS_KEY, JSON.stringify(presets));
+  safeSetItem(PRESET_LS_KEY, JSON.stringify(presets));
 }
 
 export function slugifyPresetName(value) {

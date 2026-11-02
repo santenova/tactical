@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Mic, X, Volume2, RefreshCw } from 'lucide-react';
-import { useLocalStorage } from '../../hooks/useLocalStorage';
+import PauseCalibrationModal from './PauseCalibrationModal';
+import { safeSetItem } from '@/lib/safeStorage';
 
 const PRESETS = [
   { id: 'tactical', label: 'TACTICAL', pitch: 0.9, rate: 0.9, volume: 1.0, langHint: 'en-GB', genderHint: 'Female' },
@@ -13,16 +14,20 @@ const PRESETS = [
 
 const LS_KEY = 'tactical_voice_config';
 
+// silenceThreshold is the pause after speech (ms) before a turn is submitted
+const DEFAULT_CONFIG = { pitch: 1.0, rate: 0.9, volume: 1.0, voiceName: '', preset: 'tactical', silenceThreshold: 800 };
+
 function loadConfig() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY)) || { pitch: 1.0, rate: 0.9, volume: 1.0, voiceName: '', preset: 'tactical' }; }
-  catch { return { pitch: 1.0, rate: 0.9, volume: 1.0, voiceName: '', preset: 'tactical' }; }
+  try { return { ...DEFAULT_CONFIG, ...(JSON.parse(localStorage.getItem(LS_KEY)) || {}) }; }
+  catch { return { ...DEFAULT_CONFIG }; }
 }
 
-export default function VoiceConfigPanel({ isOpen, onClose, onConfigChange }) {
+export default function VoiceConfigPanel({ isOpen, onClose, onConfigChange, onCalibrationChange }) {
   const [voices, setVoices] = useState([]);
   const [config, setConfig] = useState(loadConfig);
   const [preview, setPreview] = useState(false);
   const [filter, setFilter] = useState('');
+  const [calibrating, setCalibrating] = useState(false);
 
   useEffect(() => {
     const loadVoices = () => {
@@ -34,9 +39,13 @@ export default function VoiceConfigPanel({ isOpen, onClose, onConfigChange }) {
     return () => window.speechSynthesis?.removeEventListener('voiceschanged', loadVoices);
   }, []);
 
+  useEffect(() => {
+    if (!isOpen) setCalibrating(false);
+  }, [isOpen]);
+
   const saveConfig = useCallback((next) => {
     setConfig(next);
-    localStorage.setItem(LS_KEY, JSON.stringify(next));
+    safeSetItem(LS_KEY, JSON.stringify(next));
     onConfigChange?.(next);
   }, [onConfigChange]);
 
@@ -47,7 +56,7 @@ export default function VoiceConfigPanel({ isOpen, onClose, onConfigChange }) {
       v.lang.startsWith(p.langHint) &&
       (p.genderHint === '' || v.name.toLowerCase().includes(p.genderHint.toLowerCase()))
     ) || voices.find(v => v.lang.startsWith(p.langHint)) || null;
-    saveConfig({ pitch: p.pitch, rate: p.rate, volume: p.volume, voiceName: matchedVoice?.name || '', preset: p.id });
+    saveConfig({ ...config, pitch: p.pitch, rate: p.rate, volume: p.volume, voiceName: matchedVoice?.name || '', preset: p.id });
   };
 
   const speak = () => {
@@ -119,6 +128,14 @@ export default function VoiceConfigPanel({ isOpen, onClose, onConfigChange }) {
           {slider('PITCH', 'pitch', 0.1, 2, 0.05, v => v.toFixed(2))}
           {slider('RATE', 'rate', 0.1, 2, 0.05, v => v.toFixed(2))}
           {slider('VOLUME', 'volume', 0, 1, 0.01, v => `${Math.round(v * 100)}%`)}
+          {slider('PAUSE THRESHOLD', 'silenceThreshold', 300, 2500, 50, v => `${Math.round(v)} ms`)}
+          <button
+            onClick={() => setCalibrating(true)}
+            className="neon-btn px-3 py-2 rounded text-xs tracking-widest flex items-center justify-center gap-2"
+            data-desc="Measure Your Ideal Pause"
+          >
+            <Mic size={12} /> CALIBRATE PAUSE
+          </button>
         </div>
 
         {/* Voice selector */}
@@ -152,9 +169,18 @@ export default function VoiceConfigPanel({ isOpen, onClose, onConfigChange }) {
           <div><span style={{ opacity: 0.5 }}>PITCH:</span> {config.pitch.toFixed(2)}</div>
           <div><span style={{ opacity: 0.5 }}>RATE:</span> {config.rate.toFixed(2)}</div>
           <div><span style={{ opacity: 0.5 }}>VOLUME:</span> {Math.round(config.volume * 100)}%</div>
+          <div><span style={{ opacity: 0.5 }}>PAUSE:</span> {Math.round(config.silenceThreshold)} ms</div>
           <div><span style={{ opacity: 0.5 }}>VOICE:</span> {config.voiceName || 'auto'}</div>
         </div>
       </div>
+
+      <PauseCalibrationModal
+        isOpen={calibrating}
+        onClose={() => setCalibrating(false)}
+        currentThreshold={config.silenceThreshold}
+        onApply={(ms) => { saveConfig({ ...config, silenceThreshold: ms }); setCalibrating(false); }}
+        onStateChange={onCalibrationChange}
+      />
     </div>
   );
 }

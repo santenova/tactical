@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Globe, Plus, Trash2, RefreshCw, Play, CheckCircle, AlertCircle } from 'lucide-react';
+import { safeSetItem } from '@/lib/safeStorage';
 
 const LS_KEY = 'tactical_browserless_endpoints';
 const BL_ACTIVE_KEY = 'tactical_bl_active_ep';
@@ -21,7 +22,7 @@ function load() {
   try { return JSON.parse(localStorage.getItem(LS_KEY)) || DEFAULT_ENDPOINTS; }
   catch { return DEFAULT_ENDPOINTS; }
 }
-function save(eps) { localStorage.setItem(LS_KEY, JSON.stringify(eps)); }
+function save(eps) { safeSetItem(LS_KEY, JSON.stringify(eps)); }
 
 const TESTS = [
   { id: 'config', label: 'GET / (health)', desc: 'Fetch Browserless root / health check' },
@@ -52,14 +53,14 @@ export default function BrowserlessPanel() {
     setEndpoints(next); save(next);
     setNewUrl(''); setNewToken(''); setNewLabel(''); setNewProxy(''); setShowAdd(false);
     const idx = next.length - 1;
-    setActiveEp(idx); localStorage.setItem(BL_ACTIVE_KEY, idx);
+    setActiveEp(idx); safeSetItem(BL_ACTIVE_KEY, idx);
   };
 
   const removeEp = (i) => {
     const next = endpoints.filter((_, idx) => idx !== i);
     setEndpoints(next); save(next);
     const newActive = activeEp >= next.length ? Math.max(0, next.length - 1) : activeEp;
-    setActiveEp(newActive); localStorage.setItem(BL_ACTIVE_KEY, newActive);
+    setActiveEp(newActive); safeSetItem(BL_ACTIVE_KEY, newActive);
   };
 
   const updateToken = (token) => {
@@ -136,7 +137,7 @@ export default function BrowserlessPanel() {
       <div className="flex flex-wrap gap-2 items-center">
         {endpoints.map((e, i) => (
           <div key={i} className="flex items-center gap-1">
-            <button onClick={() => { setActiveEp(i); localStorage.setItem(BL_ACTIVE_KEY, i); }}
+            <button onClick={() => { setActiveEp(i); safeSetItem(BL_ACTIVE_KEY, i); }}
               style={{ fontFamily: 'Rajdhani, sans-serif', fontSize: '0.7rem', letterSpacing: '1px', padding: '3px 10px', borderRadius: 3, cursor: 'pointer', border: `1px solid ${i === activeEp ? 'var(--neon-primary)' : 'rgba(0,255,204,0.2)'}`, background: i === activeEp ? 'rgba(0,255,204,0.08)' : 'transparent', color: i === activeEp ? 'var(--neon-primary)' : 'rgba(0,255,204,0.5)' }}
             >{e.label}</button>
             {endpoints.length > 1 && (
@@ -206,7 +207,7 @@ export default function BrowserlessPanel() {
 
       <div>
         <div style={{ fontSize: '0.65rem', color: 'rgba(0,255,204,0.4)', letterSpacing: '2px', marginBottom: 6 }}>CUSTOM FUNCTION SCRIPT</div>
-        <textarea value={customScript} onChange={e => { setCustomScript(e.target.value); localStorage.setItem(BL_SCRIPT_KEY, e.target.value); }}
+        <textarea value={customScript} onChange={e => { setCustomScript(e.target.value); safeSetItem(BL_SCRIPT_KEY, e.target.value); }}
           rows={5} className="w-full rounded px-3 py-2" style={{ fontFamily: 'monospace', fontSize: '0.72rem' }} />
         <button onClick={runScript} disabled={scriptRunning || !ep} className="neon-btn px-4 py-2 rounded text-xs flex items-center gap-2 mt-2">
           {scriptRunning ? <RefreshCw size={10} className="animate-spin" /> : <Play size={10} />}

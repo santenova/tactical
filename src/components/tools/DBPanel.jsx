@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Database, RefreshCw, ChevronRight, ChevronDown, Trash2, Plus, Search, ChevronsUpDown, ChevronUp } from 'lucide-react';
 
 import { loadEsEndpoints, saveEsEndpoints, ES_ACTIVE_LS_KEY } from '@/lib/esEndpoints';
+import { safeSetItem } from '@/lib/safeStorage';
 
 const DB_ACTIVE_KEY = ES_ACTIVE_LS_KEY;
 
@@ -80,7 +81,7 @@ export default function DBPanel() {
   const connectEndpoint = useCallback(async (index) => {
     const baseUrl = endpoints[index]?.url;
     if (!baseUrl) return;
-    setActiveEp(index); localStorage.setItem(DB_ACTIVE_KEY, index);
+    setActiveEp(index); safeSetItem(DB_ACTIVE_KEY, index);
     setAllData({});
     setExpandedRow(null);
     setError('');
@@ -140,7 +141,7 @@ export default function DBPanel() {
   const removeEndpointSafe = (i) => {
     removeEndpoint(i);
     const newActive = Math.min(activeEp, endpoints.length - 2);
-    localStorage.setItem(DB_ACTIVE_KEY, Math.max(0, newActive));
+    safeSetItem(DB_ACTIVE_KEY, Math.max(0, newActive));
   };
 
   const removeEndpoint = (i) => {

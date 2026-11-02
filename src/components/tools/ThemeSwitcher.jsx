@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { safeSetItem } from '@/lib/safeStorage';
 
 export const THEMES = {
   tactical: {
@@ -50,7 +51,7 @@ export default function ThemeSwitcher({ activeTheme, onThemeChange }) {
 
   const handleAccentColor = (color) => {
     setAccentColor(color);
-    localStorage.setItem('tactical_accent_color', color);
+    safeSetItem('tactical_accent_color', color);
     const root = document.documentElement;
     root.style.setProperty('--neon-primary', color);
     root.style.setProperty('--iris-primary', color);
