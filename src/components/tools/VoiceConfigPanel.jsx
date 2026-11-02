@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Mic, X, Volume2, RefreshCw } from 'lucide-react';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 import PauseCalibrationModal from './PauseCalibrationModal';
 import { safeSetItem } from '@/lib/safeStorage';
 

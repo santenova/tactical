@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { CheckCircle, XCircle, Loader, AlertTriangle } from 'lucide-react';
 
 import { preferElasticEndpoint } from '@/lib/esEndpoints';

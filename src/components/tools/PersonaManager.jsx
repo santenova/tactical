@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
+import { THEMES } from './ThemeSwitcher';
 
 export const PERSONAS = {
   tactical: {

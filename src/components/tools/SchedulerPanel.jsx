@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Square, Clock, Plus, Trash2 } from 'lucide-react';
+import { Play, Square, Clock, Plus, Trash2, RefreshCw } from 'lucide-react';
 import { safeSetItem } from '@/lib/safeStorage';
 
 const SCHED_LS_KEY = 'tactical_core_schedules';

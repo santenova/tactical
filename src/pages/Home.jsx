@@ -8,7 +8,7 @@ import HoverCloud from '../components/tools/HoverCloud';
 import MediaRepository from '../components/tools/MediaRepository';
 import MainFeed from '../components/tools/MainFeed';
 import ScreenRecorder from '../components/tools/ScreenRecorder';
-import { applyTheme } from '../components/tools/ThemeSwitcher';
+import ThemeSwitcher, { applyTheme } from '../components/tools/ThemeSwitcher';
 import PersonaManager, { PERSONAS } from '../components/tools/PersonaManager';
 import OrbFullscreen from '../components/tools/OrbFullscreen';
 import PersonaBackground from '../components/tools/PersonaBackground';
@@ -663,15 +663,18 @@ export default function Home() {
     setTranscript(`"${message}"`);
     // Only text-box messages are wrapped — voice turns are sent exactly as heard.
     // The flavor picked in the orb selects which prompt template wraps them.
-    const answer = await processUserSpeech(message, {
-      detailed: true,
-      wrap: (m) => wrapOrbPrompt(orbFlavor, m),
-    });
-    // Only the orb's answer joins the conversation transcript, not the typed question
+    const wrapped = wrapOrbPrompt(orbFlavor, message);
+    const answer = await processUserSpeech(message, { detailed: true, wrap: () => wrapped });
+    // The protocol-wrapped prompt opens the turn, followed by the orb's answer
     if (answer) {
       const { list: threaded, id: convId } = ensureConversation(conversationsRef.current, activeConvIdRef.current, message);
       activeConvIdRef.current = convId;
-      setConversations(addMessage(threaded, convId, answerMessage(answer, { model: selectedModel })));
+      const sentAt = Date.now();
+      setConversations(addMessage(
+        addMessage(threaded, convId, { id: `u${sentAt}`, role: 'user', content: wrapped, ts: sentAt }),
+        convId,
+        answerMessage(answer, { model: selectedModel }),
+      ));
       setActiveConversationId(convId);
     }
   }, [processUserSpeech, orbFlavor, selectedModel, setActiveConversationId, setConversations]);
@@ -948,6 +951,7 @@ export default function Home() {
                   missionBriefItems={missionBriefItems}
                   onMissionBriefChange={setMissionBriefItems}
                   focusInputTrigger={focusTrigger}
+                  onSendToOrb={sendOrbMessage}
                 />
               </div>
 

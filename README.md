@@ -18,17 +18,14 @@ Prerequisites: Node 18+, plus a local **Ollama** instance, **Elasticsearch** ins
    ```bash
    npm install
    ```
-2. Create `.env.local` with the Base44 app credentials:
+2. Create `build` 
    ```
-   VITE_BASE44_APP_ID=your_app_id
-   VITE_BASE44_APP_BASE_URL=your_backend_url
+   npm run build
    ```
 3. Run the dev server:
    ```bash
    npm run dev
    ```
-
-Open [Base44.com](https://Base44.com) to edit the app on the platform; click **Publish** there to ship changes. Docs: [docs.base44.com](https://docs.base44.com/Integrations/Using-GitHub) · Support: [app.base44.com/support](https://app.base44.com/support).
 
 ### Scripts
 

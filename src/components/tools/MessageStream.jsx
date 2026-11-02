@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
 
-export default function MessageStream({ messages = [], streamingText = '', isGenerating }) {
+export default function MessageStream({ messages = [], streamingText = '', isGenerating, onSendToOrb }) {
   const boxRef = useRef(null);
 
   useEffect(() => {
@@ -18,7 +18,7 @@ export default function MessageStream({ messages = [], streamingText = '', isGen
           No messages yet<br />Send a prompt to start this conversation
         </div>
       )}
-      {messages.map(m => <MessageBubble key={m.id} message={m} />)}
+      {messages.map(m => <MessageBubble key={m.id} message={m} onSendToOrb={onSendToOrb} />)}
       {isGenerating && (
         <MessageBubble message={{ id: 'streaming', role: 'assistant', content: streamingText, ts: Date.now() }} />
       )}

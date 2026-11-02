@@ -19,7 +19,7 @@ export default function ChatPanel({
   messages = [], streamingText = '', streamingConversationId = '',
   conversations = [], activeConversationId = '',
   onSelectConversation, onNewConversation, onDeleteConversation,
-  missionBriefItems = [], onMissionBriefChange, focusInputTrigger = 0,
+  missionBriefItems = [], onMissionBriefChange, focusInputTrigger = 0, onSendToOrb,
 }) {
   const [showCanvas, setShowCanvas] = useState(false);
   const [varDialog, setVarDialog] = useState(null); // { vars: string[], values: {[k]:string} }
@@ -194,6 +194,7 @@ export default function ChatPanel({
         messages={messages}
         streamingText={streamingText}
         isGenerating={isGenerating && (!streamingConversationId || streamingConversationId === activeConversationId)}
+        onSendToOrb={onSendToOrb}
       />
       <CanvasOutput output={output} visible={showCanvas} />
 

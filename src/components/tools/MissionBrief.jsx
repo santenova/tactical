@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Target, Plus, Trash2, X, Pin, PinOff, Edit2, Check } from 'lucide-react';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 
 const CATEGORIES = ['IDENTITY', 'MISSION', 'RULES', 'CONTEXT', 'FACTS', 'OTHER'];
 

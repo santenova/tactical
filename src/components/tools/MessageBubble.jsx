@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Send } from 'lucide-react';
 
-export default function MessageBubble({ message }) {
+export default function MessageBubble({ message, onSendToOrb }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
+  const [sent, setSent] = useState(false);
   const time = new Date(message.ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   const copy = () => {
@@ -11,6 +12,14 @@ export default function MessageBubble({ message }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
+  };
+
+  // Hands this fragment to the orb exactly as if it had been typed into its input
+  const sendToOrb = () => {
+    if (!onSendToOrb) return;
+    onSendToOrb(message.content || '');
+    setSent(true);
+    setTimeout(() => setSent(false), 1500);
   };
 
   return (
@@ -44,10 +53,18 @@ export default function MessageBubble({ message }) {
       </div>
 
       {!isUser && message.content && (
-        <button onClick={copy} className="flex items-center gap-1 mt-1"
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(0,255,204,0.35)', fontSize: '0.55rem', letterSpacing: '1.5px', fontFamily: 'Rajdhani, sans-serif' }}>
-          {copied ? <Check size={9} /> : <Copy size={9} />} {copied ? 'COPIED' : 'COPY'}
-        </button>
+        <div className="flex items-center gap-3 mt-1">
+          <button onClick={copy} className="flex items-center gap-1"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(0,255,204,0.35)', fontSize: '0.55rem', letterSpacing: '1.5px', fontFamily: 'Rajdhani, sans-serif' }}>
+            {copied ? <Check size={9} /> : <Copy size={9} />} {copied ? 'COPIED' : 'COPY'}
+          </button>
+          {onSendToOrb && (
+            <button onClick={sendToOrb} data-desc="Send Fragment To Orb"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: sent ? 'var(--neon-primary)' : 'rgba(0,255,204,0.35)', fontSize: '0.55rem', letterSpacing: '1.5px', fontFamily: 'Rajdhani, sans-serif' }}>
+              {sent ? <Check size={9} /> : <Send size={9} />} {sent ? 'SENT' : 'SEND TO ORB'}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
