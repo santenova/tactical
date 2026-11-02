@@ -121,6 +121,25 @@ export default function CorePanel({ aiEndpoint, aiModel }) {
   const ensureIndex = useCallback(async (esUrl, indexName, embeddingEnabled, dims = 768) => {
     const res = await fetch(`${esUrl}/${indexName}`);
     if (res.status === 200) {
+      // A core built before embeddings were switched on has no vector field, so every
+      // vector written later would be dropped — add the mapping before indexing
+      if (embeddingEnabled) {
+        const mapRes = await fetch(`${esUrl}/${indexName}/_mapping`);
+        const mapJson = mapRes.ok ? await mapRes.json() : {};
+        const existing = mapJson?.[indexName]?.mappings?.properties?.embedding;
+        if (!existing) {
+          const putRes = await fetch(`${esUrl}/${indexName}/_mapping`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ properties: { embedding: { type: 'dense_vector', dims, index: true, similarity: 'cosine' } } }),
+          });
+          addLog(putRes.ok
+            ? `Added embedding field (${dims}d) to existing index "${indexName}"`
+            : `Failed to add embedding field to "${indexName}"`, putRes.ok ? 'ok' : 'error');
+        } else if (existing.dims && existing.dims !== dims) {
+          addLog(`Index "${indexName}" stores ${existing.dims}d vectors but the model returns ${dims}d — vectors will be rejected, build a fresh core`, 'warn');
+        }
+      }
       setIndexStatus('exists');
       addLog(`Index "${indexName}" exists`, 'ok');
       return true;

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { History, Search, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import PageShell from '@/components/tools/PageShell';
 import { loadEsEndpoints, ES_ACTIVE_LS_KEY, saveActiveEsEndpoint } from '@/lib/esEndpoints';
@@ -88,11 +88,16 @@ export default function InteractionLogs() {
     } catch { /* index not present yet — model filter stays empty */ }
   }, [ep]);
 
+  // The archive loads itself as soon as the page opens (or the endpoint changes) —
+  // REFRESH is only a manual re-run
+  const bootedRef = useRef('');
   useEffect(() => {
-    search();
+    if (!ep || bootedRef.current === ep) return;
+    bootedRef.current = ep;
+    search({ q: '', m: '' });
     loadModels();
      
-  }, [activeEp]);
+  }, [ep]);
 
   const selectEp = (i) => {
     setActiveEp(i);

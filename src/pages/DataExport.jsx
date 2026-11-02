@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Download, RefreshCw, Database, Check } from 'lucide-react';
 import PageShell from '@/components/tools/PageShell';
 import { loadEsEndpoints, ES_ACTIVE_LS_KEY, saveActiveEsEndpoint } from '@/lib/esEndpoints';
@@ -87,10 +87,15 @@ export default function DataExport() {
     }
   }, [ep]);
 
+  // Indices load themselves when the page opens or the endpoint changes —
+  // RELOAD INDICES is only a manual re-scan
+  const bootedRef = useRef('');
   useEffect(() => {
-    loadIndices();
+    if (!ep || bootedRef.current === ep) return;
+    bootedRef.current = ep;
+    loadIndices(ep);
      
-  }, [activeEp]);
+  }, [ep]);
 
   const selectEp = (i) => {
     setActiveEp(i);

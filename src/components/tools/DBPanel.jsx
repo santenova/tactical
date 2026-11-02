@@ -59,6 +59,8 @@ export default function DBPanel() {
   const [indexSearch, setIndexSearch] = useState('');
   // Track connected ep to avoid re-fetching
   const connectedEpRef = useRef(null);
+  // Endpoint whose views were last loaded — keeps the auto-refresh from firing twice
+  const bootedRef = useRef('');
 
   const ep = endpoints[activeEp]?.url || '';
 
@@ -86,6 +88,8 @@ export default function DBPanel() {
     setExpandedRow(null);
     setError('');
     connectedEpRef.current = baseUrl;
+    // Claim the boot marker so the auto-refresh doesn't fire a second identical round
+    bootedRef.current = baseUrl;
     // Fire all view fetches in parallel
     await Promise.all(VIEWS.map(v => fetchView(v, baseUrl)));
   }, [endpoints, fetchView]);
@@ -98,13 +102,13 @@ export default function DBPanel() {
     VIEWS.forEach(v => fetchView(v, ep));
   }, [ep, fetchView]);
 
-  // Every view loads as soon as the panel opens — no endpoint click needed
-  const bootedRef = useRef(false);
+  // Every view refreshes itself the moment the panel opens or the endpoint changes —
+  // REFRESH ALL is only a manual re-run, never required to see data
   useEffect(() => {
-    if (bootedRef.current) return;
-    bootedRef.current = true;
-    connectEndpoint(activeEp);
-  }, [activeEp, connectEndpoint]);
+    if (!ep || bootedRef.current === ep) return;
+    bootedRef.current = ep;
+    refreshAll();
+  }, [ep, refreshAll]);
 
   const fetchSub = useCallback(async (index, type) => {
     const key = `${index}_${type}`;

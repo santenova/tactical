@@ -12,6 +12,16 @@ const MODES = [
 const SOURCE_FIELDS = ['query', 'title', 'url', 'snippet', 'scraped_at'];
 
 const textQuery = (q) => ({ multi_match: { query: q, fields: ['title^3', 'snippet^1.5', 'query'], type: 'best_fields', fuzziness: 'AUTO' } });
+
+// Elasticsearch puts the real cause in the body — a bare "HTTP 400" hides it
+async function esError(res, label) {
+  let reason = '';
+  try {
+    const json = await res.json();
+    reason = json?.error?.root_cause?.[0]?.reason || json?.error?.reason || '';
+  } catch {}
+  return new Error(`${label} HTTP ${res.status}${reason ? ` — ${reason}` : ''}`);
+}
 const coreLabel = (idx) => (idx || '').replace(INDEX_PREFIX, '');
 
 function ScoreBar({ score, maxScore, mode }) {
@@ -77,8 +87,11 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
       setSelectedIndices([]); // default: every core
       setIndicesLoaded(true);
       setError('');
+      return names;
     } catch (e) {
+      setIndicesLoaded(true);
       setError(`Failed to list knowledge cores: ${e.message}`);
+      return [];
     }
   }, [esEp]);
 
@@ -94,6 +107,27 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
     return json.embedding;
   }, [embeddingUrl, embeddingModel]);
 
+  // Which cores actually carry a dense_vector field, and at what width — kNN on a
+  // core without the field is rejected by Elasticsearch for the whole request
+  const loadVectorCores = useCallback(async (names) => {
+    const res = await fetch(`${esEp.url}/${names.join(',')}/_mapping`);
+    if (!res.ok) throw await esError(res, 'Mapping');
+    const json = await res.json();
+    const cores = {};
+    Object.entries(json || {}).forEach(([idx, def]) => {
+      const vec = def?.mappings?.properties?.embedding;
+      if (vec?.type === 'dense_vector') cores[idx] = vec.dims || null;
+    });
+    return cores;
+  }, [esEp]);
+
+  // Cores whose vector width matches the query vector
+  const compatibleCores = (vectorCores, dims) =>
+    Object.keys(vectorCores).filter(n => !vectorCores[n] || vectorCores[n] === dims);
+
+  const dimsMessage = (vectorCores, dims) =>
+    `Query vector is ${dims}d but the selected cores are ${[...new Set(Object.values(vectorCores))].join('/')}d — re-index with the current embedding model`;
+
   const setSearchMeta = (hits, total) => {
     const maxScore = hits.reduce((m, h) => Math.max(m, h._score || 0), 0);
     setResults(hits.map(h => ({ ...h, _maxScore: maxScore })));
@@ -102,8 +136,10 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
 
   const runSearch = useCallback(async (q = query, mode = searchMode) => {
     if (!q.trim() || !esEp) return;
-    if (!indicesLoaded) { setError('Load knowledge cores first'); return; }
-    const target = (selectedIndices.length ? selectedIndices : indices).join(',');
+    // Cores resolve themselves before the query goes out — no manual LOAD CORES step
+    const pool = indicesLoaded ? indices : await loadIndices();
+    const targets = selectedIndices.length ? selectedIndices : pool;
+    const target = targets.join(',');
     if (!target) { setError('No knowledge cores available — build one in the INGEST tab'); return; }
 
     setLoading(true);
@@ -124,78 +160,77 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
       if (mode === 'text') {
         const body = { query: textQuery(q.trim()), _source: SOURCE_FIELDS, size: k };
         const res = await fetch(`${esEp.url}/${target}/_search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!res.ok) throw new Error(`Search HTTP ${res.status}`);
+        if (!res.ok) throw await esError(res, 'Search');
         const json = await res.json();
         hits = (json.hits?.hits || []).map(h => ({ ...h._source, _index: h._index, _score: h._score, _mode: 'text' }));
         total = json.hits?.total?.value || hits.length;
 
       } else if (mode === 'knn') {
-        if (!embeddingEnabled) throw new Error('Enable embeddings in INGEST tab first, then re-index');
+        const vectorCores = await loadVectorCores(targets);
+        if (Object.keys(vectorCores).length === 0) {
+          throw new Error('No core in scope has vectors — re-index it in the INGEST tab with EMBEDDINGS enabled');
+        }
         const vector = await generateEmbedding(q.trim());
+        const searchable = compatibleCores(vectorCores, vector.length);
+        if (searchable.length === 0) throw new Error(dimsMessage(vectorCores, vector.length));
+
         const body = {
           knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 },
           _source: SOURCE_FIELDS,
           size: k,
         };
-        const res = await fetch(`${esEp.url}/${target}/_search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!res.ok) throw new Error(`kNN HTTP ${res.status}`);
+        const res = await fetch(`${esEp.url}/${searchable.join(',')}/_search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!res.ok) throw await esError(res, 'kNN');
         const json = await res.json();
         hits = (json.hits?.hits || []).map(h => ({ ...h._source, _index: h._index, _score: h._score, _mode: 'knn' }));
         total = json.hits?.total?.value || hits.length;
 
       } else if (mode === 'hybrid') {
-        if (!embeddingEnabled) throw new Error('Enable embeddings in INGEST tab first for hybrid search');
-        const vector = await generateEmbedding(q.trim());
-
-        // Native ES hybrid: kNN and BM25 evaluated in one request, scores combined server-side
-        const nativeBody = {
-          knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 },
-          query: textQuery(q.trim()),
-          _source: SOURCE_FIELDS,
-          size: k,
-        };
-        const nativeRes = await fetch(`${esEp.url}/${target}/_search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(nativeBody) });
-
-        if (nativeRes.ok) {
-          const json = await nativeRes.json();
-          hits = (json.hits?.hits || []).map(h => ({ ...h._source, _index: h._index, _score: h._score, _mode: 'hybrid' }));
-          total = json.hits?.total?.value || hits.length;
-        } else {
-          // Fallback for clusters without native hybrid support — client-side RRF
-          const [knnRes, textRes] = await Promise.all([
-            fetch(`${esEp.url}/${target}/_search`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 }, _source: SOURCE_FIELDS, size: k }),
-            }),
-            fetch(`${esEp.url}/${target}/_search`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query: textQuery(q.trim()), _source: SOURCE_FIELDS, size: k }),
-            }),
-          ]);
-          if (!knnRes.ok && !textRes.ok) throw new Error(`Hybrid HTTP ${nativeRes.status}`);
-
-          const [knnJson, textJson] = await Promise.all([knnRes.json(), textRes.json()]);
-          const knnHits = knnJson.hits?.hits || [];
-          const textHits = textJson.hits?.hits || [];
-
-          const scoreMap = {};
-          const RRF_K = 60;
-          knnHits.forEach((h, rank) => {
-            const key = `${h._index}:${h._id || h._source.url}`;
-            scoreMap[key] = { doc: h._source, index: h._index, score: 1 / (RRF_K + rank + 1) };
-          });
-          textHits.forEach((h, rank) => {
-            const key = `${h._index}:${h._id || h._source.url}`;
-            if (scoreMap[key]) scoreMap[key].score += 1 / (RRF_K + rank + 1);
-            else scoreMap[key] = { doc: h._source, index: h._index, score: 1 / (RRF_K + rank + 1) };
-          });
-
-          hits = Object.values(scoreMap)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, k)
-            .map(({ doc, index, score }) => ({ ...doc, _index: index, _score: score, _mode: 'hybrid' }));
-          total = hits.length;
+        const vectorCores = await loadVectorCores(targets);
+        const vectorCoresInScope = Object.keys(vectorCores);
+        if (vectorCoresInScope.length === 0) {
+          throw new Error('Hybrid needs vectors — re-index a core in the INGEST tab with EMBEDDINGS enabled');
         }
+        const vector = await generateEmbedding(q.trim());
+        const searchable = compatibleCores(vectorCores, vector.length);
+        if (searchable.length === 0) throw new Error(dimsMessage(vectorCores, vector.length));
+
+        // kNN over the vector cores and BM25 over every core in scope, run side by side
+        // and fused with reciprocal rank fusion — one request can't combine the two
+        const [knnRes, textRes] = await Promise.all([
+          fetch(`${esEp.url}/${searchable.join(',')}/_search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 }, _source: SOURCE_FIELDS, size: k }),
+          }),
+          fetch(`${esEp.url}/${target}/_search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: textQuery(q.trim()), _source: SOURCE_FIELDS, size: k }),
+          }),
+        ]);
+        if (!knnRes.ok) throw await esError(knnRes, 'kNN');
+        if (!textRes.ok) throw await esError(textRes, 'BM25');
+
+        const [knnJson, textJson] = await Promise.all([knnRes.json(), textRes.json()]);
+        const knnHits = knnJson.hits?.hits || [];
+        const textHits = textJson.hits?.hits || [];
+
+        const scoreMap = {};
+        const RRF_K = 60;
+        knnHits.forEach((h, rank) => {
+          const key = `${h._index}:${h._id || h._source.url}`;
+          scoreMap[key] = { doc: h._source, index: h._index, score: 1 / (RRF_K + rank + 1) };
+        });
+        textHits.forEach((h, rank) => {
+          const key = `${h._index}:${h._id || h._source.url}`;
+          if (scoreMap[key]) scoreMap[key].score += 1 / (RRF_K + rank + 1);
+          else scoreMap[key] = { doc: h._source, index: h._index, score: 1 / (RRF_K + rank + 1) };
+        });
+
+        hits = Object.values(scoreMap)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, k)
+          .map(({ doc, index, score }) => ({ ...doc, _index: index, _score: score, _mode: 'hybrid' }));
+        total = hits.length;
       }
 
       setSearchMeta(hits, total);
@@ -205,7 +240,7 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
     } finally {
       setLoading(false);
     }
-  }, [query, esEp, indices, selectedIndices, indicesLoaded, searchMode, embeddingEnabled, generateEmbedding, k]);
+  }, [query, esEp, indices, selectedIndices, indicesLoaded, searchMode, generateEmbedding, loadVectorCores, loadIndices, k]);
 
   const synthesize = useCallback(async () => {
     if (!results.length || !query.trim()) return;
@@ -272,9 +307,16 @@ ${context}`;
 
         {/* Federated core picker */}
         {!indicesLoaded
-          ? <button className="neon-btn px-3 py-1 rounded text-xs" onClick={loadIndices}>LOAD CORES</button>
+          ? <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.65rem', color: 'rgba(0,255,204,0.4)', letterSpacing: '2px', fontFamily: 'Rajdhani, sans-serif' }}>
+              <RefreshCw size={10} className="animate-spin" /> LOADING CORES…
+            </span>
           : indices.length === 0
-            ? <span style={{ fontSize: '0.65rem', color: 'rgba(255,170,0,0.7)', letterSpacing: '1px', fontFamily: 'Rajdhani, sans-serif' }}>NO CORES FOUND</span>
+            ? (
+              <span className="flex items-center gap-2">
+                <span style={{ fontSize: '0.65rem', color: 'rgba(255,170,0,0.7)', letterSpacing: '1px', fontFamily: 'Rajdhani, sans-serif' }}>NO CORES FOUND</span>
+                <button className="neon-btn px-3 py-1 rounded text-xs" onClick={loadIndices}>RESCAN</button>
+              </span>
+            )
             : (
               <>
                 <button onClick={() => setSelectedIndices([])}
@@ -337,7 +379,7 @@ ${context}`;
           />
           {loading && <RefreshCw size={12} className="animate-spin" style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--neon-primary)' }} />}
         </div>
-        <button className="neon-btn px-5 py-2 rounded text-sm flex items-center gap-2" onClick={() => runSearch()} disabled={loading || !indicesLoaded || indices.length === 0}>
+        <button className="neon-btn px-5 py-2 rounded text-sm flex items-center gap-2" onClick={() => runSearch()} disabled={loading || (indicesLoaded && indices.length === 0)}>
           <Search size={13} /> SEARCH
         </button>
       </div>
@@ -346,7 +388,7 @@ ${context}`;
       <div style={{ fontSize: '0.58rem', color: 'rgba(0,255,204,0.25)', letterSpacing: '2px', fontFamily: 'Rajdhani, sans-serif' }}>
         {searchMode === 'text'   && `◈ FULL-TEXT — BM25 RANKING WITH FUZZY MATCHING ACROSS ${activeCores} CORE${activeCores === 1 ? '' : 'S'}`}
         {searchMode === 'knn'    && `⬡ SEMANTIC — APPROXIMATE NEAREST NEIGHBOUR SEARCH AGAINST DENSE VECTORS (cosine) ACROSS ${activeCores} CORE${activeCores === 1 ? '' : 'S'}`}
-        {searchMode === 'hybrid' && '⟁ HYBRID — NATIVE kNN + BM25 IN A SINGLE QUERY (auto-fallbacks to RRF-60)'}
+        {searchMode === 'hybrid' && '⟁ HYBRID — kNN + BM25 FUSED CLIENT-SIDE WITH RECIPROCAL RANK FUSION (RRF-60)'}
       </div>
 
       {error && <div style={{ color: '#ff4444', fontSize: '0.75rem', padding: '7px 11px', background: 'rgba(255,0,0,0.07)', border: '1px solid rgba(255,0,0,0.2)', borderRadius: 3 }}>{error}</div>}
