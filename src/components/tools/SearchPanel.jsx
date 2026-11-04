@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Search, RefreshCw, ExternalLink, Zap, AlignLeft, GitMerge, Sparkles } from 'lucide-react';
 import { INDEX_PREFIX } from './CorePanel';
 import RagAnswer from './RagAnswer';
+import { embedText } from '@/lib/embeddings';
 
 const MODES = [
   { id: 'text',   label: '◈ FULL-TEXT',   icon: AlignLeft,  desc: 'Boolean keyword search' },
@@ -9,7 +10,7 @@ const MODES = [
   { id: 'hybrid', label: '⟁ HYBRID',      icon: GitMerge,   desc: 'Native kNN + text, RRF fallback' },
 ];
 
-const SOURCE_FIELDS = ['query', 'title', 'url', 'snippet', 'scraped_at'];
+const SOURCE_FIELDS = ['query', 'tags', 'title', 'url', 'snippet', 'scraped_at'];
 
 const textQuery = (q) => ({ multi_match: { query: q, fields: ['title^3', 'snippet^1.5', 'query'], type: 'best_fields', fuzziness: 'AUTO' } });
 
@@ -71,6 +72,8 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
   const [ragSources, setRagSources] = useState([]);
   const [ragLoading, setRagLoading] = useState(false);
   const [ragError, setRagError] = useState('');
+  // Which cores a vector search actually had to work with, when it differs from the scope
+  const [scopeNote, setScopeNote] = useState('');
   const debounceRef = useRef(null);
 
   const esEp = esEndpoints[activeES];
@@ -95,30 +98,48 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
     }
   }, [esEp]);
 
-  const generateEmbedding = useCallback(async (text) => {
-    const res = await fetch(`${embeddingUrl}/api/embeddings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: embeddingModel, prompt: text }),
-    });
-    if (!res.ok) throw new Error(`Embedding HTTP ${res.status}`);
-    const json = await res.json();
-    if (!json.embedding) throw new Error('Embedding returned null');
-    return json.embedding;
-  }, [embeddingUrl, embeddingModel]);
+  const generateEmbedding = useCallback(
+    (text) => embedText(embeddingUrl, embeddingModel, text),
+    [embeddingUrl, embeddingModel]
+  );
 
-  // Which cores actually carry a dense_vector field, and at what width — kNN on a
-  // core without the field is rejected by Elasticsearch for the whole request
+  // Which cores actually carry a dense_vector field, and at what width. A core without
+  // the field (or one that has since been deleted) makes Elasticsearch reject the whole
+  // kNN request, so each core is probed on its own and the misses are simply skipped
   const loadVectorCores = useCallback(async (names) => {
-    const res = await fetch(`${esEp.url}/${names.join(',')}/_mapping`);
-    if (!res.ok) throw await esError(res, 'Mapping');
-    const json = await res.json();
+    const probe = async (name) => {
+      try {
+        const res = await fetch(`${esEp.url}/${encodeURIComponent(name)}/_mapping`);
+        if (!res.ok) return null;
+        const json = await res.json();
+        const def = json?.[name] || Object.values(json || {})[0];
+        const vec = def?.mappings?.properties?.embedding;
+        return vec?.type === 'dense_vector' ? { name, dims: vec.dims || null } : null;
+      } catch {
+        return null;
+      }
+    };
+    const found = await Promise.all(names.map(probe));
     const cores = {};
-    Object.entries(json || {}).forEach(([idx, def]) => {
-      const vec = def?.mappings?.properties?.embedding;
-      if (vec?.type === 'dense_vector') cores[idx] = vec.dims || null;
-    });
+    found.filter(Boolean).forEach(({ name, dims }) => { cores[name] = dims; });
     return cores;
+  }, [esEp]);
+
+  // A core can declare the vector field and still hold no vectors — count what is
+  // actually there so an empty kNN result can say why it is empty
+  const countVectorDocs = useCallback(async (names) => {
+    try {
+      const res = await fetch(`${esEp.url}/${names.join(',')}/_count`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: { exists: { field: 'embedding' } } }),
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return typeof json.count === 'number' ? json.count : null;
+    } catch {
+      return null;
+    }
   }, [esEp]);
 
   // Cores whose vector width matches the query vector
@@ -151,6 +172,7 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
     setRagAnswer('');
     setRagSources([]);
     setRagError('');
+    setScopeNote('');
     const t0 = Date.now();
 
     try {
@@ -173,6 +195,9 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
         const vector = await generateEmbedding(q.trim());
         const searchable = compatibleCores(vectorCores, vector.length);
         if (searchable.length === 0) throw new Error(dimsMessage(vectorCores, vector.length));
+        if (searchable.length < targets.length) {
+          setScopeNote(`SEMANTIC SCOPE: ${searchable.length} OF ${targets.length} CORES CARRY VECTORS — THE REST ARE SKIPPED`);
+        }
 
         const body = {
           knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 },
@@ -184,34 +209,54 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
         const json = await res.json();
         hits = (json.hits?.hits || []).map(h => ({ ...h._source, _index: h._index, _score: h._score, _mode: 'knn' }));
         total = json.hits?.total?.value || hits.length;
+        // An empty semantic result usually means the vectors were never stored
+        if (hits.length === 0) {
+          const stored = await countVectorDocs(searchable);
+          setScopeNote(
+            stored === 0
+              ? 'NO VECTORS STORED — THE CORES DECLARE THE FIELD BUT NO DOCUMENT HOLDS ONE; RE-INDEX IN THE INGEST TAB WITH EMBEDDINGS ENABLED'
+              : stored != null
+                ? `kNN FOUND NOTHING — ${stored.toLocaleString()} DOCUMENT${stored === 1 ? '' : 'S'} IN SCOPE HOLD VECTORS`
+                : `kNN FOUND NOTHING — QUERY VECTOR IS ${vector.length}d, SEARCHED ${searchable.length} CORE${searchable.length === 1 ? '' : 'S'}`
+          );
+        }
 
       } else if (mode === 'hybrid') {
+        // Only cores that hold vectors can answer the kNN half; when none do, the
+        // fusion degrades to keyword-only search rather than failing outright
         const vectorCores = await loadVectorCores(targets);
-        const vectorCoresInScope = Object.keys(vectorCores);
-        if (vectorCoresInScope.length === 0) {
-          throw new Error('Hybrid needs vectors — re-index a core in the INGEST tab with EMBEDDINGS enabled');
+        let searchable = [];
+        let vector = null;
+        if (Object.keys(vectorCores).length === 0) {
+          setScopeNote('HYBRID DEGRADED TO BM25 — NO CORE IN SCOPE HOLDS VECTORS');
+        } else {
+          vector = await generateEmbedding(q.trim());
+          searchable = compatibleCores(vectorCores, vector.length);
+          if (searchable.length === 0) {
+            setScopeNote('HYBRID DEGRADED TO BM25 — NO CORE MATCHES THE QUERY VECTOR WIDTH');
+            vector = null;
+          } else if (searchable.length < targets.length) {
+            setScopeNote(`SEMANTIC SCOPE: ${searchable.length} OF ${targets.length} CORES CARRY VECTORS — THE REST ARE KEYWORD-ONLY`);
+          }
         }
-        const vector = await generateEmbedding(q.trim());
-        const searchable = compatibleCores(vectorCores, vector.length);
-        if (searchable.length === 0) throw new Error(dimsMessage(vectorCores, vector.length));
 
         // kNN over the vector cores and BM25 over every core in scope, run side by side
         // and fused with reciprocal rank fusion — one request can't combine the two
-        const [knnRes, textRes] = await Promise.all([
-          fetch(`${esEp.url}/${searchable.join(',')}/_search`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 }, _source: SOURCE_FIELDS, size: k }),
-          }),
+        const [textRes, knnRes] = await Promise.all([
           fetch(`${esEp.url}/${target}/_search`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: textQuery(q.trim()), _source: SOURCE_FIELDS, size: k }),
           }),
+          vector ? fetch(`${esEp.url}/${searchable.join(',')}/_search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ knn: { field: 'embedding', query_vector: vector, k, num_candidates: k * 15 }, _source: SOURCE_FIELDS, size: k }),
+          }) : Promise.resolve(null),
         ]);
-        if (!knnRes.ok) throw await esError(knnRes, 'kNN');
         if (!textRes.ok) throw await esError(textRes, 'BM25');
+        if (knnRes && !knnRes.ok) throw await esError(knnRes, 'kNN');
 
-        const [knnJson, textJson] = await Promise.all([knnRes.json(), textRes.json()]);
-        const knnHits = knnJson.hits?.hits || [];
+        const [textJson, knnJson] = await Promise.all([textRes.json(), knnRes ? knnRes.json() : null]);
+        const knnHits = knnJson?.hits?.hits || [];
         const textHits = textJson.hits?.hits || [];
 
         const scoreMap = {};
@@ -240,7 +285,7 @@ export default function SearchPanel({ esEndpoints, activeES, embeddingUrl, embed
     } finally {
       setLoading(false);
     }
-  }, [query, esEp, indices, selectedIndices, indicesLoaded, searchMode, generateEmbedding, loadVectorCores, loadIndices, k]);
+  }, [query, esEp, indices, selectedIndices, indicesLoaded, searchMode, generateEmbedding, loadVectorCores, countVectorDocs, loadIndices, k]);
 
   const synthesize = useCallback(async () => {
     if (!results.length || !query.trim()) return;
@@ -278,6 +323,18 @@ ${context}`;
 
   // Knowledge cores load as soon as the panel opens — LOAD CORES is only a re-scan
   useEffect(() => { loadIndices(); }, [esEp?.url]);
+
+  // Which cores can answer a vector query at all — resolved up front so semantic mode
+  // reports its real scope instead of failing after the query is sent
+  const [vectorReady, setVectorReady] = useState(null);
+  useEffect(() => {
+    if (!indices.length) { setVectorReady(null); return; }
+    let alive = true;
+    loadVectorCores(indices).then(cores => {
+      if (alive) setVectorReady({ withVectors: Object.keys(cores), dims: cores });
+    }).catch(() => { if (alive) setVectorReady(null); });
+    return () => { alive = false; };
+  }, [indices, loadVectorCores]);
 
   // Live debounced search
   useEffect(() => {
@@ -362,6 +419,13 @@ ${context}`;
         </div>
       )}
 
+      {/* Which cores the vector half could actually use */}
+      {scopeNote && (
+        <div style={{ fontSize: '0.65rem', color: 'rgba(126,184,255,0.75)', padding: '6px 12px', background: 'rgba(126,184,255,0.06)', border: '1px solid rgba(126,184,255,0.18)', borderRadius: 3, letterSpacing: '1.2px', fontFamily: 'Rajdhani, sans-serif' }}>
+          ◈ {scopeNote}
+        </div>
+      )}
+
       {/* Search bar */}
       <div className="flex gap-2">
         <div style={{ flex: 1, position: 'relative' }}>
@@ -390,6 +454,15 @@ ${context}`;
         {searchMode === 'knn'    && `⬡ SEMANTIC — APPROXIMATE NEAREST NEIGHBOUR SEARCH AGAINST DENSE VECTORS (cosine) ACROSS ${activeCores} CORE${activeCores === 1 ? '' : 'S'}`}
         {searchMode === 'hybrid' && '⟁ HYBRID — kNN + BM25 FUSED CLIENT-SIDE WITH RECIPROCAL RANK FUSION (RRF-60)'}
       </div>
+
+      {/* Vector readiness per core */}
+      {needsEmbedding && vectorReady && indices.length > 0 && (
+        <div style={{ fontSize: '0.58rem', letterSpacing: '1.5px', fontFamily: 'Rajdhani, sans-serif', color: vectorReady.withVectors.length ? 'rgba(126,184,255,0.6)' : 'rgba(255,170,0,0.7)' }}>
+          {vectorReady.withVectors.length === 0
+            ? '⬡ NO CORE HOLDS A VECTOR FIELD — RE-INDEX IN THE INGEST TAB WITH EMBEDDINGS ENABLED'
+            : `⬡ VECTORS FOUND IN ${vectorReady.withVectors.length} OF ${indices.length} CORES — ${vectorReady.withVectors.map(n => `${coreLabel(n)}${vectorReady.dims[n] ? ` (${vectorReady.dims[n]}d)` : ''}`).join(', ')}`}
+        </div>
+      )}
 
       {error && <div style={{ color: '#ff4444', fontSize: '0.75rem', padding: '7px 11px', background: 'rgba(255,0,0,0.07)', border: '1px solid rgba(255,0,0,0.2)', borderRadius: 3 }}>{error}</div>}
 
@@ -463,11 +536,11 @@ ${context}`;
                     ⬡ {coreLabel(r._index)}
                   </span>
                 )}
-                {r.query && (
-                  <span style={{ fontSize: '0.58rem', color: 'rgba(0,255,204,0.25)', letterSpacing: '1px', fontFamily: 'Rajdhani, sans-serif' }}>
-                    ◈ {r.query}
+                {(r.tags?.length ? r.tags : r.query ? [r.query] : []).map(t => (
+                  <span key={t} style={{ fontSize: '0.58rem', color: 'rgba(0,255,204,0.4)', letterSpacing: '1px', fontFamily: 'Rajdhani, sans-serif', border: '1px solid rgba(0,255,204,0.15)', borderRadius: 8, padding: '0 6px' }}>
+                    ◈ {t}
                   </span>
-                )}
+                ))}
                 {r.scraped_at && (
                   <span style={{ fontSize: '0.58rem', color: 'rgba(0,255,204,0.2)' }}>{r.scraped_at.slice(0, 10)}</span>
                 )}

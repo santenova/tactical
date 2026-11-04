@@ -96,7 +96,7 @@ export default function InteractionLogs() {
     bootedRef.current = ep;
     search({ q: '', m: '' });
     loadModels();
-     
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ep]);
 
   const selectEp = (i) => {

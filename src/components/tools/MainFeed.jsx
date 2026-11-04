@@ -35,6 +35,28 @@ export default function MainFeed({
     return `${m}:${String(sec).padStart(2, '0')}`;
   };
 
+  // Pausing captures the frozen frame and downloads it — the current optical mode
+  // filter is baked into the image so the snapshot matches what is on screen
+  const downloadSnapshot = useCallback((v) => {
+    if (!v || !v.videoWidth || v.readyState < 2) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.filter = VIDEO_MODES[videoMode]?.filter || 'none';
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const base = (currentTrack?.name || 'frame').replace(/\.[^.]+$/, '');
+      a.download = `${base}-${formatTime(v.currentTime).replace(':', '-')}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png');
+  }, [videoMode, currentTrack]);
+
   const initAudio = useCallback((videoEl) => {
     try {
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -135,8 +157,13 @@ export default function MainFeed({
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !v.src) return;
-    if (isPlaying) { v.play().catch(() => {}); } else { v.pause(); }
-  }, [isPlaying]);
+    if (isPlaying) {
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+      downloadSnapshot(v);
+    }
+  }, [isPlaying, downloadSnapshot]);
 
   const handleLoadedData = () => {
     const v = videoRef.current;

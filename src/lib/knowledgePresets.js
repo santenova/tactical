@@ -5,7 +5,8 @@ export const PRESET_LS_KEY = 'tactical_core_presets';
 export const PRESET_COLORS = [
   '#00ffcc', '#7eb8ff', '#bb88ff', '#ffcc66',
   '#00e5ff', '#ff6b6b', '#f0abfc', '#ff9500',
-  '#00cc66', '#66d9e8',
+  '#00cc66', '#66d9e8', '#c0ff6b', '#ff8fb1',
+  '#8effd0', '#d4a5ff',
 ];
 
 export const DEFAULT_PRESETS = [
@@ -29,6 +30,30 @@ export const DEFAULT_PRESETS = [
   { name: 'cybersecurity', label: '⛨ CYBERSECURITY', color: '#ff6b6b', queries: ['threat modelling', 'penetration testing', 'malware analysis', 'incident response', 'network security'] },
   { name: 'agriculture', label: '⚘ AGRICULTURE', color: '#00cc66', queries: ['soil science', 'crop rotation', 'irrigation systems', 'plant pathology', 'sustainable farming'] },
   { name: 'architecture', label: '⬔ ARCHITECTURE', color: '#66d9e8', queries: ['building design', 'urban planning', 'architectural styles', 'building materials', 'sustainable design'] },
+  { name: 'data_science', label: '⬚ DATA SCIENCE', color: '#7eb8ff', queries: ['applied statistics', 'data visualisation', 'feature engineering', 'model evaluation', 'sql analytics'] },
+  { name: 'finance', label: '₿ FINANCE', color: '#ffcc66', queries: ['portfolio theory', 'derivatives pricing', 'risk management', 'corporate valuation', 'personal finance'] },
+  { name: 'trading', label: '⇅ TRADING', color: '#00cc66', queries: ['technical analysis', 'order book dynamics', 'market microstructure', 'algorithmic trading', 'position sizing'] },
+  { name: 'business', label: '◫ BUSINESS', color: '#bb88ff', queries: ['business models', 'operations management', 'strategy frameworks', 'startup growth', 'negotiation tactics'] },
+  { name: 'marketing', label: '◈ MARKETING', color: '#ff8fb1', queries: ['brand strategy', 'search engine optimisation', 'content marketing', 'conversion optimisation', 'market research'] },
+  { name: 'devops', label: '⚙ DEVOPS', color: '#00e5ff', queries: ['container orchestration', 'ci cd pipelines', 'observability', 'infrastructure as code', 'site reliability'] },
+  { name: 'robotics', label: '⌬ ROBOTICS', color: '#66d9e8', queries: ['robot kinematics', 'control theory', 'computer vision', 'sensor fusion', 'motion planning'] },
+  { name: 'electronics', label: '⌁ ELECTRONICS', color: '#c0ff6b', queries: ['circuit analysis', 'microcontrollers', 'signal processing', 'pcb design', 'power electronics'] },
+  { name: 'ai_safety', label: '◉ AI SYSTEMS', color: '#d4a5ff', queries: ['prompt engineering', 'retrieval augmented generation', 'model alignment', 'agent architectures', 'evaluation benchmarks'] },
+  { name: 'geology', label: '⛰ GEOLOGY', color: '#ff9500', queries: ['plate tectonics', 'mineralogy', 'volcanology', 'sedimentology', 'palaeontology'] },
+  { name: 'climate', label: '☀ CLIMATE', color: '#00ffcc', queries: ['climate modelling', 'carbon cycle', 'renewable energy', 'adaptation policy', 'emissions accounting'] },
+  { name: 'nutrition', label: '❋ NUTRITION', color: '#8effd0', queries: ['macronutrients', 'metabolism', 'dietary guidelines', 'sports nutrition', 'food science'] },
+  { name: 'fitness', label: '◬ FITNESS', color: '#ff6b6b', queries: ['strength training', 'mobility work', 'endurance training', 'recovery protocols', 'programme design'] },
+  { name: 'sports', label: '⚡ SPORTS', color: '#66d9e8', queries: ['sports physiology', 'training periodisation', 'biomechanics', 'sports psychology', 'injury prevention'] },
+  { name: 'military', label: '⛊ DEFENSE', color: '#c0ff6b', queries: ['military strategy', 'threat intelligence', 'logistics planning', 'signals intelligence', 'operational doctrine'] },
+  { name: 'aviation', label: '✈ AVIATION', color: '#7eb8ff', queries: ['aerodynamics', 'flight instruments', 'air traffic control', 'aircraft systems', 'aviation meteorology'] },
+  { name: 'maritime', label: '⚓ MARITIME', color: '#00e5ff', queries: ['marine navigation', 'naval architecture', 'maritime law', 'port operations', 'marine meteorology'] },
+  { name: 'photography', label: '◐ PHOTOGRAPHY', color: '#ffcc66', queries: ['exposure triangle', 'lighting setups', 'composition rules', 'post processing', 'lens optics'] },
+  { name: 'film', label: '▶ FILM', color: '#f0abfc', queries: ['cinematography', 'screenwriting', 'film editing', 'sound design', 'film history'] },
+  { name: 'gaming', label: '◉ GAMING', color: '#bb88ff', queries: ['game design', 'level design', 'game engines', 'player psychology', 'procedural generation'] },
+  { name: 'culinary', label: '◍ CULINARY', color: '#ff9500', queries: ['culinary techniques', 'flavour pairing', 'baking science', 'knife skills', 'menu design'] },
+  { name: 'education', label: '✎ PEDAGOGY', color: '#00cc66', queries: ['learning theory', 'curriculum design', 'assessment methods', 'instructional design', 'classroom management'] },
+  { name: 'sociology', label: '⚭ SOCIOLOGY', color: '#ff8fb1', queries: ['social theory', 'urban sociology', 'social inequality', 'cultural studies', 'research methods'] },
+  { name: 'archaeology', label: '⛏ ARCHAEOLOGY', color: '#d4a5ff', queries: ['excavation methods', 'dating techniques', 'ancient artefacts', 'stratigraphy', 'cultural heritage'] },
 ];
 
 export function loadPresets() {
